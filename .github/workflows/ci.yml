@@ -16,6 +16,7 @@ jobs:
           - os: windows-latest
             qt_arch: win64_msvc2022_64
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - name: Install Qt 6.8.3
@@ -56,6 +57,7 @@ jobs:
           $licenses = Join-Path $env:QT_ROOT_DIR 'Licenses'
           if (Test-Path $licenses) { Copy-Item $licenses dist/QtLicenses -Recurse }
       - name: Check packaged GUI
+        timeout-minutes: 2
         if: runner.os == 'Windows'
         shell: pwsh
         env:
@@ -64,7 +66,15 @@ jobs:
           $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
           $env:QT_PLUGIN_PATH = (Resolve-Path dist).Path
           $env:QT_QPA_PLATFORM_PLUGIN_PATH = (Resolve-Path dist/platforms).Path
-          $process = Start-Process -FilePath ./dist/quant_price_live.exe -ArgumentList '--smoke-test' -Wait -PassThru
+          $env:QT_DEBUG_PLUGINS = '1'
+          $exe = (Resolve-Path dist/quant_price_live.exe).Path
+          $stdout = Join-Path $env:RUNNER_TEMP 'packaged-gui-stdout.log'
+          $stderr = Join-Path $env:RUNNER_TEMP 'packaged-gui-stderr.log'
+          $process = Start-Process -FilePath $exe -ArgumentList '--smoke-test' -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          $finished = $process.WaitForExit(20000)
+          Get-Content $stdout -ErrorAction SilentlyContinue
+          Get-Content $stderr -ErrorAction SilentlyContinue
+          if (-not $finished) { Stop-Process -Id $process.Id -Force; throw 'Packaged GUI did not exit within 20 seconds' }
           exit $process.ExitCode
       - name: Save Windows application
         if: runner.os == 'Windows'
