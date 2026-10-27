@@ -777,6 +777,12 @@ void ResearchPanel::start_live_paper() {
                 known = true;
         if (!known)
             throw std::invalid_argument("Metadata");
+        const auto key = bars_hash(selected_bars());
+        if (holdout_used_.size() < 1000 || holdout_used_.count(key))
+            holdout_used_[key] = true;
+        holdout_status_->setText(
+            QStringLiteral("Режим новых свечей использует актуальную историю для прогрева. Исторический "
+                           "holdout этой выборки больше не считается независимым."));
         paper_timer_.stop();
         live_timer_.stop();
         live_loader_.cancel();
@@ -823,7 +829,9 @@ void ResearchPanel::refresh_paper() {
     live_loader_.load_range(live_symbol_, since, today, live_interval_, true);
 }
 void ResearchPanel::fetch_reference() {
-    const auto b = selected_bars();
+    auto b = selected_bars();
+    if (reserve_->isChecked())
+        b.resize(b.size() * 8 / 10);
     if (b.empty() || synthetic_ || local_project_) {
         reference_status_->setText(QStringLiteral("Нужна загруженная история MOEX, не ДЕМО/проект."));
         return;
@@ -875,7 +883,7 @@ void ResearchPanel::fetch_reference() {
         QNetworkRequest(
             QUrl("https://iss.moex.com/iss/securities/" + symbol + "/dividends.json?iss.meta=off")),
         this,
-        [this, symbol, generation](const HttpResult &r) {
+        [this, symbol, generation, from, till](const HttpResult &r) {
             if (generation != study_generation_)
                 return;
             dividend_reply_.clear();
@@ -906,7 +914,8 @@ void ResearchPanel::fetch_reference() {
                     continue;
                 const auto d = QDate::fromString(a[date].toString().left(10), Qt::ISODate);
                 const double n = a[amount].toDouble(NAN);
-                if (!d.isValid() || !std::isfinite(n) || n < 0 || events_->rowCount() >= 500)
+                if (!d.isValid() || d < from || d > till || !std::isfinite(n) || n < 0 ||
+                    events_->rowCount() >= 500)
                     continue;
                 row(events_,
                     {d.toString(Qt::ISODate), QStringLiteral("Реестр дивидендов"),
@@ -1289,6 +1298,8 @@ bool ResearchPanel::workbench_test() {
     if (!pdf_file.open(QIODevice::ReadOnly) || pdf_file.size() < 1000 || !pdf_file.read(4).startsWith("%PDF"))
         return false;
     start_paper();
+    if (reserve_->isChecked() && paper_bars_.size() != selected_bars().size() * 8 / 10)
+        return false;
     for (int i = 0; i < 10; ++i)
         step_paper();
     stop_paper(QStringLiteral("Проверка восстановления"));

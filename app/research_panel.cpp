@@ -1066,6 +1066,8 @@ void ResearchPanel::start_paper() {
     live_paper_ = false;
     try {
         paper_bars_ = selected_bars();
+        if (reserve_->isChecked())
+            paper_bars_.resize(paper_bars_.size() * 8 / 10);
         quant::validate_bars(paper_bars_);
         auto config = settings();
         config.liquidate_end = false;
