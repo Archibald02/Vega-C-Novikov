@@ -123,7 +123,8 @@ TEST_CASE("Candles enforce OHLC invariants chronology types and bounds") {
 
 TEST_CASE("Public candles cache is bounded and changing symbol cancels stale work") {
     LocalServer server;
-    const QByteArray fixture=R"({"candles":{"columns":["begin","open","high","low","close","volume"],"data":[["2026-10-01 00:00:00",100,102,99,101,10]]}})";
+    QByteArray fixture=R"({"candles":{"columns":["begin","open","high","low","close","volume"],"data":[["2026-10-01 00:00:00",100,102,99,101,10]]}})";
+    fixture.replace("2026-10-01",QDate::currentDate().addDays(-1).toString(Qt::ISODate).toUtf8());
     server.handler=[fixture](auto* socket,const auto&){QTimer::singleShot(20,socket,[socket,fixture]{respond(socket,fixture);});};
     live::MarketHistory history(nullptr,server.url());QStringList symbols;QVector<bool> caches;int failures=0;
     QObject::connect(&history,&live::MarketHistory::loaded,&history,[&](const QString& symbol,int,const auto& bars,bool cached){CHECK(bars.size()==1);symbols.push_back(symbol);caches.push_back(cached);});
