@@ -13,11 +13,12 @@ class MarketFeed : public QObject {
     Q_OBJECT
 public:
     enum class Mode { Moex, Alor, Demo };
-    struct Config { Mode mode = Mode::Moex; QStringList symbols; QString refresh_token; int interval_ms = 250; };
+    struct Config { Mode mode = Mode::Moex; QStringList symbols; QString refresh_token; int interval_ms = 250; int poll_interval_ms = 5000; };
     explicit MarketFeed(QObject* parent = nullptr);
     void start(const Config& config);
     void stop();
 signals:
+    void running_changed(bool active);
     void quote_received(const live::Quote& quote);
     void status_changed(const QString& text);
 private:

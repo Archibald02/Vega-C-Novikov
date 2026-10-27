@@ -40,3 +40,9 @@ TEST_CASE("Ticker list is normalized, deduplicated and bounded") {
     QString too_many; for(int i=0;i<21;++i) too_many+=" A"+QString::number(i);
     CHECK_THROWS_AS(live::parse_symbols(too_many),std::invalid_argument);
 }
+
+TEST_CASE("Catalog uses active instruments, normalizes columns and rejects bad lots") {
+    const auto items=live::parse_catalog(R"({"securities":{"columns":["STATUS","LOTSIZE","SHORTNAME","SECID"],"data":[["A",10,"Sber","SBER"],["A",10,"Duplicate","SBER"],["S",1,"Inactive","BAD"],["A",0,"Bad lot","ZERO"],["A",1.5,"Bad lot","FRACTION"],["A",10,"Gazprom","GAZP"]]}})");
+    REQUIRE(items.size()==2);CHECK(items[0].symbol=="GAZP");CHECK(items[1].symbol=="SBER");CHECK(items[1].lot_size==10);CHECK(items[1].name=="Sber");
+    CHECK(live::parse_catalog("bad json").isEmpty());CHECK(live::parse_catalog(R"({"securities":{"columns":["SECID"],"data":[["SBER"]]}})").isEmpty());
+}

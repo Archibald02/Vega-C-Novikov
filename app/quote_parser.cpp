@@ -7,6 +7,7 @@
 #include <QSet>
 #include <QTimeZone>
 #include <cmath>
+#include <algorithm>
 #include <limits>
 #include <stdexcept>
 namespace live {
@@ -56,6 +57,26 @@ QVector<Quote> parse_moex(const QByteArray& payload) {
         q.market_time_ms = moscow.toMSecsSinceEpoch();
         result.push_back(q);
     }
+    return result;
+}
+
+QVector<Instrument> parse_catalog(const QByteArray& payload) {
+    const auto block=QJsonDocument::fromJson(payload).object().value("securities").toObject();
+    const auto columns=block.value("columns").toArray();
+    auto index=[&columns](const QString& name) { for(int i=0;i<columns.size();++i) if(columns[i].toString()==name) return i; return -1; };
+    const int code=index("SECID"), name=index("SHORTNAME"), lot=index("LOTSIZE"), status=index("STATUS");
+    QVector<Instrument> result; QSet<QString> seen;
+    if(code<0 || name<0 || lot<0 || status<0) return result;
+    for(const auto& value:block.value("data").toArray()) {
+        const auto row=value.toArray();
+        auto at=[&row](int i) { return i>=0 && i<row.size() ? row[i] : QJsonValue(); };
+        const auto symbol=at(code).toString(); const double size=at(lot).toDouble(0);
+        if(at(status).toString()!="A" || !std::isfinite(size) || size<1 || size>1000000 || std::floor(size)!=size || seen.contains(symbol)) continue;
+        try { if(parse_symbols(symbol).size()!=1 || parse_symbols(symbol).front()!=symbol) continue; } catch(...) { continue; }
+        result.push_back({symbol,at(name).toString(symbol),static_cast<int>(size)}); seen.insert(symbol);
+        if(result.size()>=5000) break;
+    }
+    std::sort(result.begin(),result.end(),[](const Instrument& a,const Instrument& b) {return a.symbol<b.symbol;});
     return result;
 }
 QStringList parse_symbols(const QString& input) {

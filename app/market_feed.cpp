@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <memory>
 namespace live {
 MarketFeed::MarketFeed(QObject* parent) : QObject(parent) {
     reconnect_.setSingleShot(true);
@@ -35,18 +36,22 @@ void MarketFeed::stop() {
     if (socket_) { socket_->disconnect(this); socket_->abort(); socket_->deleteLater(); socket_ = nullptr; }
     for (auto* reply : network_.findChildren<QNetworkReply*>()) reply->abort();
     pending_.clear(); subscriptions_.clear(); config_.refresh_token.clear(); auth_pending_ = false;
+    emit running_changed(false);
     emit status_changed(QStringLiteral("Отключено"));
 }
 void MarketFeed::start(const Config& config) {
     stop(); config_ = config; active_ = true; attempt_ = 0;
+    config_.interval_ms = std::clamp(config_.interval_ms,100,5000);
+    config_.poll_interval_ms = std::clamp(config_.poll_interval_ms,5000,60000);
+    emit running_changed(true);
     if (config_.mode == Mode::Alor) {
         if (config_.refresh_token.trimmed().isEmpty()) {
-            active_ = false; emit status_changed(QStringLiteral("Нужен Refresh token АЛОР")); return;
+            active_ = false; emit running_changed(false); emit status_changed(QStringLiteral("Нужен Refresh token АЛОР")); return;
         }
         authorize();
     } else if (config_.mode == Mode::Moex) {
-        emit status_changed(QStringLiteral("MOEX ISS • данные с задержкой • HTTP раз в 5 секунд"));
-        poll_.start(5000); poll_moex();
+        emit status_changed(QStringLiteral("MOEX ISS • данные с задержкой • один пакетный запрос раз в %1 с").arg(config_.poll_interval_ms/1000));
+        poll_.start(config_.poll_interval_ms); poll_moex();
     } else {
         demo_prices_.clear();
         for (int i = 0; i < config_.symbols.size(); ++i) demo_prices_[config_.symbols[i]] = 100.0 + 80.0 * i;
@@ -83,7 +88,9 @@ void MarketFeed::open_stream(const QString& access_token) {
     if (socket_) { socket_->disconnect(this); socket_->abort(); socket_->deleteLater(); }
     auto* ws = new QWebSocket(QString(), QWebSocketProtocol::VersionLatest, this);
     socket_ = ws; subscriptions_.clear();
-    ws->setMaxAllowedIncomingMessageSize(1024 * 1024);
+    ws->setMaxAllowedIncomingMessageSize(64 * 1024);
+    ws->setMaxAllowedIncomingFrameSize(64 * 1024);
+    ws->setReadBufferSize(128 * 1024);
     const int generation = generation_;
     connect(ws, &QWebSocket::connected, this, [this, ws, access_token, generation] {
         if (!active_ || generation != generation_) return;
@@ -136,32 +143,27 @@ void MarketFeed::retry() {
     emit status_changed(QStringLiteral("АЛОР • соединение потеряно; повтор через %1 с").arg(delay/1000));
     reconnect_.start(delay);
 }
+
 void MarketFeed::poll_moex() {
-    if (!active_) return;
-    const int generation = generation_;
-    for (const auto& symbol : config_.symbols) {
-        if (pending_.contains(symbol)) continue;
-        pending_.insert(symbol);
-        const QString path = "https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities/" + symbol + ".json";
-        QUrl url(path); QUrlQuery query;
-        query.addQueryItem("iss.meta","off"); query.addQueryItem("iss.only","marketdata");
-        query.addQueryItem("marketdata.columns","SECID,LAST,BID,OFFER,LASTTOPREVPRICE,SYSTIME"); url.setQuery(query);
-        QNetworkRequest request(url); request.setTransferTimeout(10000);
-        auto* reply = network_.get(request);
-        connect(reply, &QNetworkReply::finished, this, [this, reply, symbol, generation] {
-            reply->deleteLater();
-            if (!active_ || generation != generation_) return;
-            pending_.remove(symbol);
-            if (reply->error() != QNetworkReply::NoError) {
-                emit status_changed(QStringLiteral("MOEX ISS • ошибка сети; следующая попытка автоматически • данные с задержкой")); return;
-            }
-            const auto quotes = parse_moex(reply->readAll());
-            if (quotes.isEmpty()) {
-                emit status_changed(QStringLiteral("MOEX ISS • нет цены для %1: проверьте тикер/режим TQBR").arg(symbol)); return;
-            }
-            for (const auto& q : quotes) if (q.symbol == symbol) emit quote_received(q);
-        });
-    }
+    if(!active_ || !pending_.isEmpty()) return;
+    pending_.insert("batch");const int generation=generation_;
+    QUrl url("https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities.json");QUrlQuery query;
+    query.addQueryItem("iss.meta","off");query.addQueryItem("iss.only","marketdata");
+    query.addQueryItem("securities",config_.symbols.join(','));
+    query.addQueryItem("marketdata.columns","SECID,LAST,BID,OFFER,LASTTOPREVPRICE,SYSTIME");url.setQuery(query);
+    QNetworkRequest request(url);request.setTransferTimeout(10000);auto*reply=network_.get(request);
+    auto bytes=std::make_shared<QByteArray>();
+    connect(reply,&QNetworkReply::readyRead,this,[reply,bytes]{
+        if(bytes->size()+reply->bytesAvailable()>256*1024){reply->abort();return;}bytes->append(reply->readAll());
+    });
+    connect(reply,&QNetworkReply::finished,this,[this,reply,bytes,generation]{
+        reply->deleteLater();if(!active_||generation!=generation_)return;pending_.clear();
+        if(reply->error()!=QNetworkReply::NoError||bytes->size()+reply->bytesAvailable()>256*1024){emit status_changed(QStringLiteral("MOEX ISS • ошибка сети; повтор автоматически • данные с задержкой"));return;}
+        bytes->append(reply->readAll());const auto quotes=parse_moex(*bytes);QSet<QString> received;
+        for(const auto&q:quotes)if(config_.symbols.contains(q.symbol)){received.insert(q.symbol);emit quote_received(q);}
+        if(received.size()!=config_.symbols.size())emit status_changed(QStringLiteral("MOEX ISS • цены %1/%2 тикеров; нет LAST или инструмент недоступен TQBR").arg(received.size()).arg(config_.symbols.size()));
+        else emit status_changed(QStringLiteral("MOEX ISS • пакет %1 тикеров • данные с задержкой").arg(received.size()));
+    });
 }
 void MarketFeed::demo_tick() {
     for (const auto& symbol : config_.symbols) {

@@ -17,6 +17,10 @@ struct Quote {
 std::optional<Quote> parse_alor(const QByteArray& payload);
 /** Parse MOEX ISS columns by name; malformed rows are ignored. */
 QVector<Quote> parse_moex(const QByteArray& payload);
+/** Instrument from the current MOEX TQBR board listing. */
+struct Instrument { QString symbol, name; int lot_size = 1; };
+/** Validate active board instruments, deduplicate by symbol, cap result at 5000. */
+QVector<Instrument> parse_catalog(const QByteArray& payload);
 /** Trim, uppercase and validate up to 20 distinct TQBR-style symbols. */
 QStringList parse_symbols(const QString& input);
 }

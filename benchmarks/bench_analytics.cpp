@@ -1,5 +1,6 @@
 #include <cstdint>
 #include "quant/rolling.hpp"
+#include "quant/indicators.hpp"
 #include <benchmark/benchmark.h>
 #include "quant/analytics.hpp"
 #include <cmath>
@@ -40,4 +41,16 @@ static void BM_RollingUpdate(benchmark::State& state) {
     state.SetItemsProcessed(state.iterations());
 }
 BENCHMARK(BM_RollingUpdate)->Arg(20)->Arg(2000);
+
+static void BM_IndicatorsUpdate(benchmark::State& state) {
+    quant::StreamingIndicators indicators(static_cast<std::size_t>(state.range(0)));int i=0;
+    for(auto _ : state){i=(i+1)%1000;auto v=indicators.push(100+i*0.001);benchmark::DoNotOptimize(v);}
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_IndicatorsUpdate)->Arg(20)->Arg(500);
+static void BM_ExperimentalForecast(benchmark::State& state) {
+    std::vector<double> p(500);for(int i=0;i<500;++i)p[i]=100+std::sin(i*0.1);
+    for(auto _ : state){auto v=quant::experimental_forecast(p,30,5);benchmark::DoNotOptimize(v);}
+}
+BENCHMARK(BM_ExperimentalForecast);
 BENCHMARK_MAIN();
