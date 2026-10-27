@@ -19,6 +19,7 @@ public:
     void start(const Config& config);
     void stop();
 signals:
+    void diagnostic(int kind, int count = 1); // 0=rejected data, 1=network/server, 2=reconnect
     void running_changed(bool active);
     void quote_received(const live::Quote& quote);
     void status_changed(const QString& text);

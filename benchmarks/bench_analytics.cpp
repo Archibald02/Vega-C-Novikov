@@ -1,6 +1,7 @@
 #include <cstdint>
 #include "quant/rolling.hpp"
 #include "quant/indicators.hpp"
+#include "quant/research.hpp"
 #include <benchmark/benchmark.h>
 #include "quant/analytics.hpp"
 #include <cmath>
@@ -53,4 +54,8 @@ static void BM_ExperimentalForecast(benchmark::State& state) {
     for(auto _ : state){auto v=quant::experimental_forecast(p,30,5);benchmark::DoNotOptimize(v);}
 }
 BENCHMARK(BM_ExperimentalForecast);
+static void BM_CandleResearch(benchmark::State& state){auto p=make_prices(500);for(auto _:state){auto r=quant::stationarity(p,2,4);benchmark::DoNotOptimize(r);}}
+BENCHMARK(BM_CandleResearch);
+static void BM_Backtest500(benchmark::State& state){std::vector<quant::Bar> bars;for(int i=0;i<500;++i){const auto t=1700000000000LL+i*86400000LL;const double p=100+5*std::sin(i*.1);bars.push_back({t,t+86400000,p,p+1,p-1,p,10000});}quant::SimConfig config;for(auto _:state){auto r=quant::backtest(bars,config);benchmark::DoNotOptimize(r.metrics.total_return);}}
+BENCHMARK(BM_Backtest500);
 BENCHMARK_MAIN();

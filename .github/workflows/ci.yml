@@ -63,13 +63,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           # windeployqt includes qwindows, but the headless package test also needs offscreen.
           Copy-Item (Join-Path $env:QT_ROOT_DIR 'plugins/platforms/qoffscreen.dll') dist/platforms/
-          Copy-Item README.md,GUIDE_WINDOWS_RU.md,START_HERE.html,THIRD_PARTY.md,PRIVACY.md,VERIFICATION.md,LICENSE dist/
+          Copy-Item README.md,GUIDE_WINDOWS_RU.md,START_HERE.html,THIRD_PARTY.md,PRIVACY.md,VERIFICATION.md,LAB_GUIDE_RU.md,LAB_GUIDE.html,LICENSE dist/
           Copy-Item licenses dist/licenses -Recurse
           Copy-Item docs dist/docs -Recurse
           $licenses = Join-Path $env:QT_ROOT_DIR 'Licenses'
           if (Test-Path $licenses) { Copy-Item $licenses dist/QtLicenses -Recurse }
       - name: Check packaged GUI
-        timeout-minutes: 2
+        timeout-minutes: 4
         if: runner.os == 'Windows'
         shell: pwsh
         env:
@@ -82,12 +82,12 @@ jobs:
           $exe = (Resolve-Path dist/quant_price_live.exe).Path
           $stdout = Join-Path $env:RUNNER_TEMP 'packaged-gui-stdout.log'
           $stderr = Join-Path $env:RUNNER_TEMP 'packaged-gui-stderr.log'
-          foreach ($check in @('--visuals-test','--privacy-test')) {
+          foreach ($check in @('--visuals-test','--privacy-test','--lab-test')) {
           $process = Start-Process -FilePath $exe -ArgumentList $check -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-          $finished = $process.WaitForExit(20000)
+          $finished = $process.WaitForExit(60000)
           Get-Content $stdout -ErrorAction SilentlyContinue
           Get-Content $stderr -ErrorAction SilentlyContinue
-          if (-not $finished) { Stop-Process -Id $process.Id -Force; throw 'Packaged GUI did not exit within 20 seconds' }
+          if (-not $finished) { Stop-Process -Id $process.Id -Force; throw 'Packaged GUI did not exit within 60 seconds' }
           if ($process.ExitCode -ne 0) { exit $process.ExitCode }
           }
           exit 0

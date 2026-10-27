@@ -11,6 +11,7 @@ class VisualChart : public QWidget {
 public:
     explicit VisualChart(QWidget* parent = nullptr);
     void set_lines(const QVector<PlotLine>& lines, const QString& title, const QString& subtitle);
+    void set_histogram(const QVector<QPointF>& bins, const QString& title, const QString& subtitle);
     void set_candles(const QVector<Candle>& bars, const QString& title, const QString& subtitle);
     void clear(const QString& message = QStringLiteral("Данных пока нет"));
 protected:
@@ -26,7 +27,7 @@ private:
     QString title_, subtitle_, hover_;
     QPixmap cache_;
     QRectF price_area_;
-    bool valid_ = false;
+    bool valid_ = false, histogram_ = false;
     int view_ = 100, begin_ = 0, shown_ = 0;
 };
 }

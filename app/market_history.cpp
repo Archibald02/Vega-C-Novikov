@@ -49,7 +49,7 @@ void MarketHistory::load(const QString& symbol, int preset, bool force) {
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     const QString key = symbol + ':' + QString::number(preset);
     const auto cached = cache_.constFind(key);
-    if (!force && cached != cache_.cend() && now - cached->fetched_ms < 300000) { emit loaded(symbol, preset, cached->bars, true); return; }
+    if (!force && cached != cache_.cend() && now - cached->fetched_ms < 300000) { emit quality_report(symbol,cached->received,cached->rejected);emit loaded(symbol, preset, cached->bars, true); return; }
     if (now < resume_ms_) { emit failed(QStringLiteral("Источник ограничил запросы. Повторите через %1 с.").arg((resume_ms_ - now + 999) / 1000)); return; }
     const int days = preset == 0 ? 90 : preset == 1 ? 365 : 7;
     const auto today = QDateTime::currentDateTimeUtc().toTimeZone(QTimeZone("Europe/Moscow")).date();
@@ -73,7 +73,8 @@ void MarketHistory::load(const QString& symbol, int preset, bool force) {
             for (auto it = cache_.begin(); it != cache_.end(); ++it) if (it->fetched_ms < oldest->fetched_ms) oldest = it;
             cache_.erase(oldest);
         }
-        cache_[key] = {bars, QDateTime::currentMSecsSinceEpoch()}; emit loaded(symbol, preset, bars, false);
+        const int received=result.document.object().value("candles").toObject().value("data").toArray().size();
+        cache_[key] = {bars, QDateTime::currentMSecsSinceEpoch(),received,received-static_cast<int>(bars.size())};emit quality_report(symbol,received,received-static_cast<int>(bars.size()));emit loaded(symbol, preset, bars, false);
     }, {}, {512 * 1024, 15000});
 }
 }

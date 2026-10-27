@@ -9,10 +9,11 @@
 namespace live {
 VisualChart::VisualChart(QWidget* parent) : QWidget(parent) { setMinimumHeight(220); setMouseTracking(true); setAttribute(Qt::WA_OpaquePaintEvent); }
 void VisualChart::set_lines(const QVector<PlotLine>& lines, const QString& title, const QString& subtitle) {
-    lines_ = lines; if (lines_.size() > 6) lines_.resize(6);
+    histogram_ = false; lines_ = lines; if (lines_.size() > 6) lines_.resize(6);
     for (auto& line : lines_) if (line.points.size() > 500) line.points.resize(500);
     bars_.clear(); title_ = title; subtitle_ = subtitle; hover_.clear(); valid_ = false; update();
 }
+void VisualChart::set_histogram(const QVector<QPointF>& bins,const QString& title,const QString& subtitle){set_lines({{QStringLiteral("Частота"),QColor("#39d2b0"),bins,false}},title,subtitle);histogram_=true;valid_=false;update();}
 void VisualChart::set_candles(const QVector<Candle>& bars, const QString& title, const QString& subtitle) {
     bars_ = bars.mid(0, 500); lines_.clear(); title_ = title; subtitle_ = subtitle; hover_.clear(); view_ = 100; valid_ = false; update();
 }
@@ -51,8 +52,9 @@ void VisualChart::rebuild() {
     } else {
         for (const auto& line : lines_) for (const auto& pt : line.points) if (std::isfinite(pt.x()) && std::isfinite(pt.y())) { bound(pt.y()); xmin = std::min(xmin,pt.x()); xmax = std::max(xmax,pt.x()); }
     }
+    if(histogram_){lo=0;if(!lines_.isEmpty()&&lines_[0].points.size()>1){const double half=(xmax-xmin)/(lines_[0].points.size()-1)/2;xmin-=half;xmax+=half;}}
     if (!std::isfinite(lo) || !std::isfinite(hi)) return;
-    const double pad = std::max((hi-lo)*0.12, std::max(std::abs(lo)*0.0001,0.01)); lo -= pad; hi += pad;
+    const double pad = std::max((hi-lo)*0.12, std::max(std::abs(lo)*0.0001,0.01)); if(!histogram_)lo -= pad; hi += pad;
     auto y = [&](double v) { return price_area_.bottom() - (v-lo)/(hi-lo)*price_area_.height(); };
     for (int i=0; i<=4; ++i) {
         const double v = lo+(hi-lo)*i/4, yy = y(v);
@@ -86,9 +88,9 @@ void VisualChart::rebuild() {
             p.setPen(line.color);p.drawText(QRect(84+(legend_index%columns)*170,56+(legend_index/columns)*18,170,20),Qt::AlignLeft,line.name);++legend_index;
             QPainterPath path;bool seeded=false;
             for(const auto& pt:line.points){if(!std::isfinite(pt.x())||!std::isfinite(pt.y())){seeded=false;continue;}const QPointF q(price_area_.left()+(pt.x()-xmin)/span*price_area_.width(),y(pt.y()));if(seeded)path.lineTo(q);else{path.moveTo(q);seeded=true;}}
-            p.save();p.setClipRect(price_area_);p.setPen(QPen(line.color,1.8,line.dashed?Qt::DashLine:Qt::SolidLine));p.drawPath(path);p.restore();
+            p.save();p.setClipRect(price_area_);p.setPen(QPen(line.color,1.8,line.dashed?Qt::DashLine:Qt::SolidLine));if(histogram_){const double bar_width=price_area_.width()/std::max<qsizetype>(1,line.points.size())*.85;for(const auto& pt:line.points){const double xx=price_area_.left()+(pt.x()-xmin)/span*price_area_.width();p.fillRect(QRectF(xx-bar_width/2,y(pt.y()),bar_width,std::max(1.0,y(0)-y(pt.y()))),line.color);}}else p.drawPath(path);p.restore();
         }
-        p.setPen(QColor("#91a7be"));p.drawText(QRectF(price_area_.left(),height()-28,80,20),Qt::AlignLeft,QString::number(xmin,'f',0));p.drawText(QRectF(price_area_.right()-80,height()-28,80,20),Qt::AlignRight,QString::number(xmax,'f',0));p.drawText(QRectF(price_area_.left(),height()-28,price_area_.width(),20),Qt::AlignCenter,QStringLiteral("Наблюдения / время сессии →"));
+        p.setPen(QColor("#91a7be"));p.drawText(QRectF(price_area_.left(),height()-28,80,20),Qt::AlignLeft,QString::number(xmin,'f',0));p.drawText(QRectF(price_area_.right()-80,height()-28,80,20),Qt::AlignRight,QString::number(xmax,'f',0));p.drawText(QRectF(price_area_.left(),height()-28,price_area_.width(),20),Qt::AlignCenter,histogram_?QStringLiteral("Доходность, % →"):QStringLiteral("Наблюдения / время сессии →"));
     }
 }
 void VisualChart::paintEvent(QPaintEvent*) {

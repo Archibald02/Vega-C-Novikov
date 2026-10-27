@@ -28,7 +28,7 @@ void text_if_changed(QLabel* item,const QString& text){if(item->text()!=text)ite
 QDoubleSpinBox* number(double value,double low=0.01,double high=1e12,int decimals=2){auto*w=new QDoubleSpinBox;w->setRange(low,high);w->setDecimals(decimals);w->setValue(value);w->setGroupSeparatorShown(true);return w;}
 }
 MainWindow::MainWindow(bool test_mode):test_mode_(test_mode){
-    setWindowTitle(QStringLiteral("Quant Price Live 4 • Российские акции"));resize(1440,1000);setMinimumSize(1000,720);
+    setWindowTitle(QStringLiteral("Quant Price Live 5 • Российские акции"));resize(1440,1000);setMinimumSize(1000,720);
     setStyleSheet(R"(
       QMainWindow,QWidget{background:#0b1420;color:#e7f0fa;font-family:'Segoe UI',sans-serif;font-size:12px;}
       QLabel{background:transparent;} QLineEdit,QComboBox,QSpinBox,QDoubleSpinBox{background:#162538;border:1px solid #31465d;border-radius:5px;padding:6px;min-height:20px;}
@@ -40,7 +40,7 @@ MainWindow::MainWindow(bool test_mode):test_mode_(test_mode){
       QTabWidget::pane{border:1px solid #25394e;} QSplitter::handle{background:#0b1420;height:8px;}
     )");
     auto* root=new QWidget;auto* scroll=new QScrollArea;scroll->setWidgetResizable(true);scroll->setFrameShape(QFrame::NoFrame);scroll->setWidget(root);setCentralWidget(scroll);auto* layout=new QVBoxLayout(root);layout->setContentsMargins(20,16,20,12);layout->setSpacing(10);
-    auto* heading=new QHBoxLayout;heading->addWidget(label("QUANT / PRICE LIVE 4","font-size:23px;font-weight:700;letter-spacing:2px;"));heading->addStretch();
+    auto* heading=new QHBoxLayout;heading->addWidget(label("QUANT / PRICE LIVE 5","font-size:23px;font-weight:700;letter-spacing:2px;"));heading->addStretch();
     heading->addWidget(label(QStringLiteral("MOEX • TQBR • C++17 / Qt"),"color:#85a1b9;"));layout->addLayout(heading);
     auto* settings=new QHBoxLayout;auto* left=new QFormLayout;auto* right=new QFormLayout;
     provider_=new QComboBox;provider_->addItems({QStringLiteral("MOEX ISS — с задержкой, без ключа"),QStringLiteral("АЛОР — WebSocket, боевой аккаунт"),QStringLiteral("ДЕМО — синтетические цены")});
@@ -75,6 +75,7 @@ MainWindow::MainWindow(bool test_mode):test_mode_(test_mode){
     auto* reset=new QPushButton(QStringLiteral("Сбросить масштаб"));for(auto* c:{show_sma_,show_ema_,show_bands_})chart_options->addWidget(c);chart_options->addWidget(oscillator_);chart_options->addStretch();chart_options->addWidget(label(QStringLiteral("Колесо: масштаб • курсор: цена"),"color:#7f99b1;"));chart_options->addWidget(reset);chart_layout->addLayout(chart_options);chart_layout->addWidget(chart_,1);
     tabs_->addTab(chart_page,QStringLiteral("График и индикаторы"));tabs_->addTab(forecast_panel(),QStringLiteral("Учебные прогнозы"));tabs_->addTab(risk_panel(),QStringLiteral("Калькулятор и пороги"));tabs_->addTab(performance_panel(),QStringLiteral("Производительность"));tabs_->addTab(help_panel(),QStringLiteral("API и помощь"));
     candles_=new HistoryPanel;tabs_->addTab(candles_,QStringLiteral("Свечи MOEX"));tabs_->addTab(comparison_panel(),QStringLiteral("Сравнение"));
+    lab_=new ResearchPanel;tabs_->addTab(lab_,QStringLiteral("Лаборатория"));
     // Each pane scrolls independently, so the tallest settings page cannot force the whole window off screen.
     for(int i=0;i<tabs_->count();++i){auto* page=tabs_->widget(i);const auto title=tabs_->tabText(i);tabs_->removeTab(i);auto* pane=new QScrollArea;pane->setWidgetResizable(true);pane->setFrameShape(QFrame::NoFrame);pane->setWidget(page);tabs_->insertTab(i,pane,title);}
     tabs_->setCurrentIndex(0);
@@ -84,6 +85,7 @@ MainWindow::MainWindow(bool test_mode):test_mode_(test_mode){
     connect(start_,&QPushButton::clicked,this,&MainWindow::connect_feed);connect(stop_,&QPushButton::clicked,this,[this]{feed_.stop();set_controls(false);token_->clear();});
     connect(catalog_button_,&QPushButton::clicked,this,&MainWindow::show_catalog);connect(api,&QPushButton::clicked,this,[this]{tabs_->setCurrentIndex(4);});
     connect(&feed_,&MarketFeed::quote_received,this,&MainWindow::receive);connect(&feed_,&MarketFeed::status_changed,this,[this](const QString&s){text_if_changed(connection_,s);});
+    connect(&feed_,&MarketFeed::diagnostic,this,[this](int kind,int count){if(kind==0)quality_invalid_+=count;else if(kind==1)quality_network_+=count;else quality_reconnect_+=count;});
     connect(&feed_,&MarketFeed::running_changed,this,[this](bool running){set_controls(running);if(!running)token_->clear();});
     connect(table_,&QTableWidget::itemSelectionChanged,this,&MainWindow::selection_changed);
     auto options=[this]{chart_->set_options(show_sma_->isChecked(),show_ema_->isChecked(),show_bands_->isChecked(),oscillator_->currentIndex());};
@@ -145,7 +147,7 @@ void MainWindow::update_comparison(){
     if(lines.isEmpty())comparison_->clear(QStringLiteral("Нужно минимум два обновления цены"));else comparison_->set_lines(lines,QStringLiteral("Сравнение динамики • %"),QStringLiteral("Секунды с подключения по временным меткам источника • до 500 точек на линию"));
 }
 void MainWindow::reset_local_data(){
-    feed_.stop();render_timer_.stop();chart_->set_series(nullptr,"","",0);rows_.clear();tickers_.clear();table_->setRowCount(0);token_->clear();candles_->clear_private_state();comparison_->clear();forecast_chart_->clear();forecast_enabled_->setChecked(false);forecast_text_->setText(QStringLiteral("Расчёт выключен."));
+    feed_.stop();render_timer_.stop();chart_->set_series(nullptr,"","",0);rows_.clear();tickers_.clear();table_->setRowCount(0);token_->clear();candles_->clear_private_state();lab_->clear_private_state();comparison_->clear();forecast_chart_->clear();forecast_enabled_->setChecked(false);forecast_text_->setText(QStringLiteral("Расчёт выключен."));
     metric_price_->setText(QStringLiteral("—"));metric_sma_->setText(QStringLiteral("—"));metric_vol_->setText(QStringLiteral("—"));metric_count_->setText(QStringLiteral("—"));indicator_text_->setText(QStringLiteral("Данные сессии очищены."));alert_text_->setText(QStringLiteral("Пороги очищены."));
     symbols_->setText("SBER, GAZP, LKOH, YDEX");provider_->setCurrentIndex(0);capital_->setValue(100000);risk_->setValue(1);entry_->setValue(100);stop_price_->setValue(95);target_->setValue(110);lot_->setValue(1);alert_level_->setValue(100);window_->setValue(20);frequency_->setValue(250);performance_->setCurrentIndex(0);history_->setCurrentIndex(1);poll_seconds_->setValue(5);lookback_->setValue(30);horizon_->setValue(5);oscillator_->setCurrentIndex(1);show_ema_->setChecked(false);show_bands_->setChecked(false);
     bool settings_cleared=true;if(!test_mode_){QSettings settings;settings.clear();settings.sync();settings_cleared=settings.status()==QSettings::NoError;}connection_->setText(settings_cleared?QStringLiteral("Отключено • данные и настройки очищены"):QStringLiteral("Данные сессии очищены, но системные настройки удалить не удалось."));
@@ -166,8 +168,10 @@ void MainWindow::connect_feed(){
 }
 void MainWindow::receive(const Quote&q){
     auto it=rows_.find(q.symbol);if(it==rows_.end())return;auto& row=it->second;
-    if(!std::isfinite(q.last)||q.last<=0 || q.last>1e12 || q.market_time_ms<=0 || q.market_time_ms>QDateTime::currentMSecsSinceEpoch()+300000 || (row.stats.size()&&q.market_time_ms<row.quote.market_time_ms))return;
+    ++quality_rx_;
+    if(!std::isfinite(q.last)||q.last<=0||q.last>1e12||q.market_time_ms<=0||q.market_time_ms>QDateTime::currentMSecsSinceEpoch()+300000){++quality_invalid_;return;}if(row.stats.size()&&q.market_time_ms<row.quote.market_time_ms){++quality_old_;return;}
     const bool distinct=row.stats.size()==0||q.market_time_ms!=row.quote.market_time_ms||q.last!=row.quote.last;
+    if(!distinct)++quality_dup_;
     if(distinct){try{row.stats.push(q.last);const auto indicators=row.indicators.push(q.last);row.points.push({q.market_time_ms,q.last,indicators});++row.revision;comparison_dirty_=true;}catch(...){return;}}
     row.received=QDateTime::currentMSecsSinceEpoch();row.quote=q;row.dirty=true;
     if(row.alert_armed && (row.alert_above?q.last>=row.alert_level:q.last<=row.alert_level)){row.alert_armed=false;alert_text_->setText(QStringLiteral("ПОРОГ ДОСТИГНУТ • %1 • %2 ₽ • %3").arg(q.symbol,fmt(q.last),QDateTime::currentDateTime().toString("HH:mm:ss")));alert_text_->setStyleSheet("color:#f1c879;font-weight:600;");}
@@ -176,7 +180,7 @@ void MainWindow::receive(const Quote&q){
 void MainWindow::schedule_render(){if(isVisible()&&!isMinimized()&&!render_timer_.isActive())render_timer_.start(redraw_ms_);}
 QString MainWindow::selected_symbol()const{const int i=table_->currentRow();return i>=0&&i<tickers_.size()?tickers_[i]:QString();}
 MainWindow::Row* MainWindow::selected_row(){const auto it=rows_.find(selected_symbol());return it==rows_.end()?nullptr:&it->second;}
-void MainWindow::selection_changed(){forecast_dirty_=true;comparison_dirty_=true;if(candles_)candles_->set_symbol(selected_symbol());render();update_forecast();}
+void MainWindow::selection_changed(){table_->setVisible(tabs_->currentIndex()!=7);forecast_dirty_=true;comparison_dirty_=true;if(candles_)candles_->set_symbol(selected_symbol());if(lab_)lab_->set_symbol(selected_symbol());render();update_forecast();}
 void MainWindow::render(){
     if(!isVisible()||isMinimized())return;
     for(int i=0;i<tickers_.size();++i){auto&row=rows_.at(tickers_[i]);if(!row.dirty||!row.stats.size())continue;row.dirty=false;const auto&q=row.quote;
@@ -196,6 +200,7 @@ void MainWindow::maintenance(){
     if(!isVisible()||isMinimized())return;
     const auto now=QDateTime::currentMSecsSinceEpoch();std::size_t count=0,bytes=0;bool dirty=false;
     for(int i=0;i<tickers_.size();++i){auto&row=rows_.at(tickers_[i]);count+=row.points.size();bytes+=row.points.allocated_bytes();dirty|=row.dirty;if(!row.received)continue;const auto age=std::max<qint64>(0,now-row.received)/1000;auto*item=table_->item(i,8);item->setToolTip(QStringLiteral("Возраст последнего ответа, не задержка биржевых данных. При отключении значение продолжает расти."));const auto value=QString::number(age);if(item->text()!=value)item->setText(value);item->setForeground(age>std::max(30,provider_->currentIndex()==0?poll_seconds_->value()*3:30)?QColor("#e6bb6b"):QColor("#a9bfd3"));}
+    lab_->set_feed_quality(QStringLiteral("Поток текущего запуска: принято %1; повторов цена+время %2; устаревших %3; некорректных %4; сетевых/серверных ошибок %5; попыток восстановления %6.\nСостояние: %7").arg(quality_rx_).arg(quality_dup_).arg(quality_old_).arg(quality_invalid_).arg(quality_network_).arg(quality_reconnect_).arg(connection_->text()));
     if(dirty)schedule_render();update_forecast();const auto resource=resources_.sample();
     text_if_changed(resource_text_,QStringLiteral("CPU: %1% ядра   •   RAM процесса: %2 МиБ   •   Точек: %3   •   Буфер истории: %4 МиБ   •   Перерисовок графика: %5").arg(resource.cpu_percent,0,'f',1).arg(resource.memory_mib,0,'f',1).arg(count).arg(bytes/(1024.0*1024),0,'f',2).arg(chart_->rebuild_count()));
 }
@@ -239,6 +244,7 @@ bool MainWindow::exercise_tools_test(){
     alert_level_->setValue(1);arm_alert();auto*row=selected_row();Quote q=row->quote;q.market_time_ms+=1000;receive(q);if(!alert_text_->text().contains(QStringLiteral("ДОСТИГНУТ")))return false;
     tabs_->setCurrentIndex(0);render();return true;
 }
+bool MainWindow::exercise_lab_test(){stop_for_test();tabs_->setCurrentIndex(7);return lab_->self_test();}
 bool MainWindow::exercise_visuals_test(){
     if(!exercise_tools_test())return false;
     QVector<Candle> bars;const auto base=QDateTime::currentMSecsSinceEpoch()-90LL*86400000;
@@ -253,6 +259,7 @@ bool MainWindow::exercise_visuals_test(){
     showMinimized();QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);showNormal();resize(1440,1000);tabs_->setCurrentIndex(5);return true;
 }
 bool MainWindow::exercise_privacy_test(){
+    if(!lab_->privacy_test())return false;
     if(!token_->text().isEmpty()||provider_->currentIndex()!=0||!token_->isHidden())return false;
     provider_->setCurrentIndex(1);token_->setText("SYNTHETIC_TEST_TOKEN");save_settings();
     {QSettings settings;settings.sync();const QStringList allowed{"symbols","window","frequency","provider","performance","history","poll_seconds"};for(const auto& key:settings.allKeys())if(!allowed.contains(key)||settings.value(key).toString().contains("SYNTHETIC_TEST_TOKEN")||settings.value(key).toString().contains("ENVIRONMENT_CANARY"))return false;}

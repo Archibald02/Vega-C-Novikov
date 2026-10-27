@@ -17,3 +17,8 @@ Those dependencies are fetched by CMake, not copied into this source archive.
 Market-data access and redistribution are governed separately by the provider's terms.
 No market-data license or brokerage account is provided with this source code.
 The app is a read-only monitor: it contains no order-placement integration.
+
+
+## Разработческий численный эталон v5
+
+Генератор tests/generate_research_reference.py использует отдельно установленный statsmodels и NumPy только для сверки чисел. Эти библиотеки не входят в Windows-пакет и не являются зависимостями приложения. Формулы/критические значения и источники методики перечислены в LAB_GUIDE_RU.md.

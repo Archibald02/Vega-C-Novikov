@@ -3,6 +3,7 @@
 #include <QDateTime>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QRandomGenerator>
@@ -82,7 +83,7 @@ void MarketFeed::authorize() {
         if (result.status == 401 || result.status == 403 || result.status == 400) {
             stop(); emit status_changed(QStringLiteral("АЛОР • доступ отклонён: проверьте Refresh token и права")); return;
         }
-        if (!result.ok()) { retry(result.retry_after_seconds); return; }
+        if (!result.ok()) { emit diagnostic(1); retry(result.retry_after_seconds); return; }
         const auto token = result.document.object().value("AccessToken").toString();
         if (token.isEmpty() || token.size() > 8192) { stop(); emit status_changed(QStringLiteral("АЛОР • неожиданный ответ авторизации")); return; }
         open_stream(token);
@@ -128,7 +129,7 @@ void MarketFeed::open_stream(const QString& access_token) {
             attempt_ = 0;
             emit status_changed(QStringLiteral("АЛОР • подписки подтверждаются • поток котировок"));
         }
-        const auto quote = parse_alor(message.toUtf8());
+        const auto quote = parse_alor(message.toUtf8());if(object.contains("data")&&!quote)emit diagnostic(0);
         if (quote && config_.symbols.contains(quote->symbol)) {
             attempt_ = 0;
             emit quote_received(*quote);
@@ -153,7 +154,7 @@ void MarketFeed::retry(int minimum_seconds) {
     const int delay = std::max(std::clamp(minimum_seconds,0,300)*1000,std::min(30000,1000*(1<<attempt_)));
     attempt_=std::min(attempt_+1,5);
     emit status_changed(QStringLiteral("АЛОР • соединение потеряно; повтор через %1 с").arg(delay/1000));
-    reconnect_.start(delay);
+    emit diagnostic(2);reconnect_.start(delay);
 }
 
 void MarketFeed::poll_moex() {
@@ -168,12 +169,14 @@ void MarketFeed::poll_moex() {
         if (!active_ || generation != generation_) return;
         pending_.clear();
         if (!result.ok()) {
+            emit diagnostic(1);
             const int delay = std::max(result.retry_after_seconds, std::min(60, 5 * (1 << std::min(moex_failures_, 3))));
             moex_failures_ = std::min(moex_failures_ + 1, 4);
             moex_resume_ms_ = QDateTime::currentMSecsSinceEpoch() + delay * 1000;
             emit status_changed(QStringLiteral("MOEX ISS • %1 Повтор не раньше %2 с. Данные задержаны.").arg(http_error_text(result)).arg(delay)); return;
         }
         const auto quotes = parse_moex(result.document.toJson(QJsonDocument::Compact)); QSet<QString> received;
+        const int rows=result.document.object().value("marketdata").toObject().value("data").toArray().size();if(rows>quotes.size())emit diagnostic(0,rows-quotes.size());
         for (const auto& q : quotes) if (config_.symbols.contains(q.symbol)) { received.insert(q.symbol); emit quote_received(q); }
         if (received.isEmpty()) {
             moex_failures_ = std::min(moex_failures_ + 1, 4);

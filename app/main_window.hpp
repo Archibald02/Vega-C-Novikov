@@ -5,6 +5,7 @@
 #include "history_panel.hpp"
 #include "visual_chart.hpp"
 #include "resource_monitor.hpp"
+#include "research_panel.hpp"
 #include "quant/rolling.hpp"
 #include <QCheckBox>
 #include <QComboBox>
@@ -28,6 +29,10 @@ public:
     void start_soak_test();
     bool soak_ready() const;
     bool exercise_visuals_test();
+    bool exercise_lab_test();
+    void start_lab_online_test(){tabs_->setCurrentIndex(7);lab_->start_online_test();}
+    bool lab_online_ready(){return lab_->online_ready();}
+    void select_lab_test_view(int index){lab_->set_test_view(index);}
     bool exercise_privacy_test();
     void select_visual_test(int index);
     bool has_demo_data() const;
@@ -84,6 +89,8 @@ private:
     QTabWidget* tabs_;
     ChartWidget* chart_;
     HistoryPanel* candles_;
+    ResearchPanel* lab_;
+    quint64 quality_rx_=0,quality_dup_=0,quality_old_=0,quality_invalid_=0,quality_network_=0,quality_reconnect_=0;
     VisualChart *comparison_, *forecast_chart_;
     QLabel* token_label_;
     bool comparison_dirty_ = true;

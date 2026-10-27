@@ -21,8 +21,9 @@ public:
 signals:
     void loaded(const QString& symbol, int preset, const QVector<live::Candle>& bars, bool cached);
     void failed(const QString& text);
+    void quality_report(const QString& symbol, int received, int rejected);
 private:
-    struct Entry { QVector<Candle> bars; qint64 fetched_ms = 0; };
+    struct Entry { QVector<Candle> bars; qint64 fetched_ms = 0; int received = 0, rejected = 0; };
     QNetworkAccessManager network_;
     QPointer<QNetworkReply> reply_;
     QMap<QString, Entry> cache_;

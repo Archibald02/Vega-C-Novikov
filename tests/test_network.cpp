@@ -5,6 +5,7 @@
 #include "market_history.hpp"
 #include <QCoreApplication>
 #include <QEventLoop>
+#include <QEvent>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QNetworkCookie>
@@ -97,16 +98,16 @@ TEST_CASE("Connection drop and incomplete HTTP body return controlled errors") {
 TEST_CASE("Destroying request owner cancels and suppresses late callbacks") {
     LocalServer server;server.handler=[](auto*,const auto&){};QNetworkAccessManager network;bool called=false;auto* owner=new QObject;
     QPointer<QNetworkReply> reply=live::request_json(network,QNetworkRequest(server.url()),owner,[&](auto){called=true;});
-    QTimer::singleShot(20,[owner]{delete owner;});events(100);CHECK_FALSE(called);CHECK(reply.isNull());CHECK(network.findChildren<QNetworkReply*>().isEmpty());
+    REQUIRE(wait_for([&]{return !server.received.isEmpty();}));delete owner;REQUIRE(wait_for([&]{QCoreApplication::sendPostedEvents(nullptr,QEvent::DeferredDelete);return reply.isNull();}));CHECK_FALSE(called);CHECK(network.findChildren<QNetworkReply*>().isEmpty());
 }
 TEST_CASE("Restart ignores stale replies and releases cancelled requests") {
-    LocalServer server;server.handler=[](auto* s,const auto&){QTimer::singleShot(80,s,[s]{respond(s,moex_fixture());});};
+    LocalServer server;server.handler=[](auto* s,const QByteArray& request){if(request.contains("GAZP"))respond(s,moex_fixture());};
     live::MarketFeed feed(nullptr,server.url());QStringList seen;
     QObject::connect(&feed,&live::MarketFeed::quote_received,&feed,[&](const live::Quote& q){seen.push_back(q.symbol);});
     live::MarketFeed::Config config;config.symbols={"SBER"};feed.start(config);
-    QTimer::singleShot(15,&feed,[&]{config.symbols={"GAZP"};feed.start(config);});events(220);feed.stop();events(20);
+    REQUIRE(wait_for([&]{return server.received.size()==1;}));config.symbols={"GAZP"};feed.start(config);REQUIRE(wait_for([&]{return !seen.isEmpty();}));feed.stop();REQUIRE(wait_for([&]{QCoreApplication::sendPostedEvents(nullptr,QEvent::DeferredDelete);return feed.findChildren<QNetworkReply*>().isEmpty();}));
     CHECK(seen==QStringList{"GAZP"});CHECK(feed.findChildren<QNetworkReply*>().isEmpty());
-    for(int i=0;i<50;++i){feed.start(config);feed.stop();}events(50);CHECK(feed.findChildren<QNetworkReply*>().isEmpty());
+    for(int i=0;i<50;++i){feed.start(config);feed.stop();}REQUIRE(wait_for([&]{QCoreApplication::sendPostedEvents(nullptr,QEvent::DeferredDelete);return feed.findChildren<QNetworkReply*>().isEmpty();}));
 }
 TEST_CASE("Feed rejects invalid configuration without sending a request") {
     LocalServer server;live::MarketFeed feed(nullptr,server.url());live::MarketFeed::Config config;config.symbols={"https://invalid"};feed.start(config);events(30);CHECK(server.received.isEmpty());
