@@ -1,10 +1,12 @@
 #include "research_panel.hpp"
 #include "quote_parser.hpp"
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QEventLoop>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QJsonDocument>
 #include <QScrollArea>
 #include <QSplitter>
 #include <QStandardItemModel>
@@ -184,9 +186,24 @@ ResearchPanel::ResearchPanel(QWidget *parent) : QWidget(parent) {
     top->addWidget(cancel);
     top->addWidget(demo_button);
     layout->addLayout(top);
-    status_ = text(
-        QStringLiteral("Публичный MOEX ISS • без регистрации • до 6×500 закрытых свечей • данные задержаны"));
+    status_ = text(QStringLiteral(
+        "Публичный MOEX ISS • без регистрации • до 6×5000 закрытых свечей • данные задержаны"));
     layout->addWidget(status_);
+    auto *dates = new QHBoxLayout;
+    custom_dates_ = new QCheckBox(QStringLiteral("Свои даты"));
+    const auto today = QDateTime::currentDateTimeUtc().toTimeZone(QTimeZone("Europe/Moscow")).date();
+    from_ = new QDateEdit(today.addYears(-3));
+    till_ = new QDateEdit(today);
+    for (auto *w : {from_, till_}) {
+        w->setCalendarPopup(true);
+        w->setDisplayFormat("dd.MM.yyyy");
+        w->setDateRange(QDate(1990, 1, 1), today);
+    }
+    dates->addWidget(custom_dates_);
+    dates->addWidget(from_);
+    dates->addWidget(till_);
+    dates->addStretch();
+    layout->addLayout(dates);
     auto *controls = new QHBoxLayout;
     selected_ = new QComboBox;
     window_ = integer(20, 3, 200);
@@ -234,6 +251,8 @@ ResearchPanel::ResearchPanel(QWidget *parent) : QWidget(parent) {
         scroll->setWidget(page);
         tabs_->insertTab(i, scroll, title);
     }
+    tabs_->addTab(workbench_page(), QStringLiteral("Исследования и выпуск"));
+    setup_workbench();
     tabs_->setCurrentIndex(0);
     layout->addWidget(tabs_, 1);
     worker_ = new QFutureWatcher<LabResult>(this);
@@ -248,6 +267,7 @@ ResearchPanel::ResearchPanel(QWidget *parent) : QWidget(parent) {
         }
         last_result_ = result;
         present(result);
+        record_run(result);
         status_->setText(synthetic_
                              ? QStringLiteral("ДЕМО • расчёт завершён, все цены синтетические")
                              : QStringLiteral("MOEX ISS • расчёт закрытых задержанных свечей завершён"));
@@ -266,6 +286,7 @@ ResearchPanel::ResearchPanel(QWidget *parent) : QWidget(parent) {
             return;
         }
         synthetic_ = false;
+        local_project_ = false;
         loading_ = true;
         load_->setEnabled(false);
         period_->setEnabled(false);
@@ -288,8 +309,7 @@ ResearchPanel::ResearchPanel(QWidget *parent) : QWidget(parent) {
     });
     connect(&loader_, &MarketHistory::loaded, this,
             [this](const QString &symbol, int preset, const QVector<Candle> &bars, bool) {
-                if (!loading_ || request_index_ >= requested_.size() ||
-                    symbol != requested_[request_index_] || preset != period_->currentIndex())
+                if (!loading_ || request_index_ >= requested_.size() || symbol != requested_[request_index_])
                     return;
                 std::vector<quant::Bar> accepted;
                 int incomplete = 0, gaps = 0;
@@ -391,10 +411,28 @@ void ResearchPanel::cancel_work() {
     load_->setEnabled(true);
     period_->setEnabled(true);
     paper_timer_.stop();
+    live_timer_.stop();
+    live_loader_.cancel();
+    live_paper_ = false;
+    reference_loader_.cancel();
+    ++study_generation_;
+    if (dividend_reply_)
+        dividend_reply_->abort();
 }
 void ResearchPanel::clear_private_state() {
     cancel_work();
     data_.clear();
+    runs_.clear();
+    runs_table_->setRowCount(0);
+    runs_chart_->clear();
+    holdout_used_.clear();
+    attempts_ = 0;
+    events_->setRowCount(0);
+    reference_status_->clear();
+    holdout_status_->clear();
+    preflight_->clear();
+    save_account_->setChecked(false);
+    save_cash_->setChecked(false);
     paper_.reset();
     paper_bars_.clear();
     selected_->clear();
@@ -414,6 +452,16 @@ void ResearchPanel::clear_private_state() {
     participation_->setValue(0);
     symbols_->setText("SBER, GAZP, LKOH");
     paper_source_.clear();
+    paper_parameters_ = {};
+    live_symbol_.clear();
+    live_last_ = 0;
+    local_project_ = false;
+    paper_manual_stop_ = -1;
+    loader_.clear();
+    live_loader_.clear();
+    reference_loader_.clear();
+    stability_->setRowCount(0);
+    stress_->setRowCount(0);
     status_->setText(QStringLiteral("Лаборатория очищена. Загрузите историю или ДЕМО."));
     quality_->setText(QStringLiteral("Данные лаборатории очищены."));
     statistics_->clear();
@@ -433,7 +481,11 @@ void ResearchPanel::load_next() {
                              .arg(requested_[request_index_])
                              .arg(request_index_ + 1)
                              .arg(requested_.size()));
-        loader_.load(requested_[request_index_], period_->currentIndex());
+        if (custom_dates_->isChecked())
+            loader_.load_range(requested_[request_index_], from_->date(), till_->date(),
+                               period_->currentIndex() == 2 ? 60 : 24);
+        else
+            loader_.load(requested_[request_index_], period_->currentIndex());
         return;
     }
     loading_ = false;
@@ -443,6 +495,8 @@ void ResearchPanel::load_next() {
         if (kv.second.size() >= 3)
             selected_->addItem(kv.first);
     quality_->setText(diagnostics_.join('\n'));
+    catalog_.load();
+    preflight();
     status_->setText(QStringLiteral(
         "История загружена. Выберите инструмент и нажмите расчёт. Незавершённые свечи исключены."));
 }
@@ -671,6 +725,14 @@ quant::SimConfig ResearchPanel::settings() const {
     c.strategy.exit = rules(exit_rules_, exit_all_);
     c.initial_cash = cash_->value();
     c.lot = lot_->value();
+    c.tick_size = tick_ ? tick_->value() : 0;
+    if (!synthetic_ && !local_project_ && !manual_metadata_->isChecked())
+        for (const auto &i : catalog_.instruments())
+            if (i.symbol == selected_->currentText()) {
+                c.lot = i.lot_size;
+                c.tick_size = i.tick_size;
+                break;
+            }
     c.commission_rate = commission_->value() / 100;
     c.fixed_fee = fixed_->value();
     c.spread_bps = spread_->value();
@@ -694,7 +756,8 @@ std::vector<quant::Bar> ResearchPanel::selected_bars() const {
 void ResearchPanel::calculate() {
     if (loading_ || worker_->isRunning())
         return;
-    const auto bars = selected_bars();
+    auto bars = selected_bars();
+    preflight();
     if (bars.size() < 40) {
         status_->setText(
             QStringLiteral("Нужно минимум 40 закрытых свечей. Для walk-forward — обучение + тест."));
@@ -707,19 +770,60 @@ void ResearchPanel::calculate() {
         status_->setText(QStringLiteral("Проверьте параметры: SMA fast должна быть меньше slow."));
         return;
     }
+    if (!synthetic_ && !manual_metadata_->isChecked()) {
+        bool known = false;
+        for (const auto &item : catalog_.instruments())
+            if (item.symbol == selected_->currentText() && item.tick_size > 0)
+                known = true;
+        if (!known) {
+            status_->setText(QStringLiteral(
+                "Сначала загрузите лот и шаг из MOEX или явно включите ручную проверку метаданных."));
+            return;
+        }
+    }
+    const auto complete_bars = bars;
+    const bool holdout = evaluate_holdout_;
+    evaluate_holdout_ = false;
+    const bool reserve = reserve_->isChecked();
+    const auto split = static_cast<std::size_t>(complete_bars.size() * .8);
+    if (reserve && !holdout)
+        bars.resize(split);
+    if (bars.size() < 40)
+        return;
+    const int embargo = gap_->value();
+    auto parameters = configuration();
+    parameters.insert("data_begin_utc", QString::number(bars.front().time));
+    parameters.insert("data_end_utc", QString::number(bars.back().end));
+    parameters.insert("bar_count", static_cast<int>(bars.size()));
+    const auto hash = fingerprint(bars);
+    const auto source = selected_->currentText() + " • " +
+                        (local_project_ ? QStringLiteral("ЛОКАЛЬНЫЙ ПРОЕКТ, источник не перепроверен")
+                         : synthetic_   ? QStringLiteral("СИНТЕТИЧЕСКОЕ ДЕМО")
+                                        : QStringLiteral("MOEX ISS, задержанные данные"));
+    attempts_ = std::min(1000000, attempts_ + 1);
     cancel_ = std::make_shared<std::atomic<bool>>(false);
     auto cancelled = cancel_;
     const int window = window_->value(), lags = lags_->value(), adf = adf_lags_->value(),
               kpss = kpss_lags_->value(), train = train_->value(), test = test_->value();
     std::vector<std::vector<quant::Bar>> series;
     for (const auto &kv : data_)
-        if (kv.second.size() >= 3)
-            series.push_back(kv.second);
+        if (kv.second.size() >= 3) {
+            auto sample = kv.second;
+            if (reserve && !holdout)
+                sample.erase(std::remove_if(sample.begin(), sample.end(),
+                                            [&bars](const quant::Bar &b) { return b.end > bars.back().end; }),
+                             sample.end());
+            series.push_back(std::move(sample));
+        }
     calculate_->setEnabled(false);
     status_->setText(QStringLiteral("Расчёт в фоновом потоке…"));
     worker_->setFuture(
-        QtConcurrent::run([bars, series, config, window, lags, adf, kpss, train, test, cancelled] {
+        QtConcurrent::run([bars, complete_bars, series, config, window, lags, adf, kpss, train, test,
+                           cancelled, parameters, hash, source, holdout, split, embargo] {
             LabResult r;
+            r.parameters = parameters;
+            r.hash = hash;
+            r.source = source;
             try {
                 std::vector<double> prices;
                 for (const auto &b : bars)
@@ -733,12 +837,24 @@ void ResearchPanel::calculate() {
                 r.features = quant::candle_features(bars, config.strategy.fast, config.strategy.slow, window);
                 if (cancelled->load())
                     return r;
-                r.correlation = quant::aligned_correlation(series);
+                if (std::any_of(series.begin(), series.end(),
+                                [](const std::vector<quant::Bar> &s) { return s.empty(); }))
+                    r.correlation.matrix.assign(series.size(),
+                                                std::vector<double>(series.size(), quant::unavailable()));
+                else
+                    r.correlation = quant::aligned_correlation(series);
                 r.simulation = quant::backtest(bars, config);
                 r.baseline = quant::buy_hold(bars, config);
                 if (cancelled->load())
                     return r;
                 r.walk = quant::walk_forward(bars, config, train, test);
+                if (cancelled->load())
+                    return r;
+                r.robustness = quant::robustness(bars, config, cancelled.get());
+                if (holdout && !cancelled->load()) {
+                    r.holdout = quant::final_holdout(complete_bars, config, split, embargo);
+                    r.has_holdout = true;
+                }
             } catch (const std::exception &) {
                 r.error =
                     QStringLiteral("Расчёт невозможен: недостаточно данных, некорректные интервалы/параметры "
@@ -768,7 +884,9 @@ void ResearchPanel::show_distribution() {
     }
 }
 void ResearchPanel::present(const LabResult &r) {
-    const auto bars = selected_bars();
+    auto bars = selected_bars();
+    if (bars.size() > r.features.size())
+        bars.resize(r.features.size());
     const auto &d = r.distribution;
     statistics_->setText(
         QStringLiteral("%1 • %2 закрытых свечей, %3 доходностей\nСредняя: %4% • σ (выборочная): %5% • q05 / "
@@ -899,12 +1017,22 @@ void ResearchPanel::present(const LabResult &r) {
     backtest_journal_->setRowCount(0);
     backtest_journal_->setProperty("journal_total", 0);
     journal_rows(backtest_journal_, r.simulation);
+    QVector<QPointF> markers;
+    for (const auto &e : r.simulation.journal)
+        if (e.quantity) {
+            auto it = std::lower_bound(bars.begin(), bars.end(), e.time,
+                                       [](const quant::Bar &b, qint64 t) { return b.time < t; });
+            if (it != bars.end() && it->time == e.time)
+                markers.push_back({static_cast<double>(it - bars.begin()), e.price});
+        }
+    price_chart_->set_markers(markers);
 }
 void ResearchPanel::demo() {
     data_.clear();
     selected_->clear();
     diagnostics_.clear();
     synthetic_ = true;
+    local_project_ = false;
     period_->setCurrentIndex(1);
     const QStringList names{"SBER", "GAZP", "LKOH"};
     for (int k = 0; k < 3; ++k) {
@@ -929,18 +1057,24 @@ void ResearchPanel::demo() {
 }
 void ResearchPanel::start_paper() {
     paper_timer_.stop();
+    live_timer_.stop();
+    live_loader_.cancel();
+    live_paper_ = false;
     try {
         paper_bars_ = selected_bars();
         quant::validate_bars(paper_bars_);
         auto config = settings();
         config.liquidate_end = false;
         paper_ = std::make_unique<quant::PaperEngine>(config);
+        paper_parameters_ = configuration();
+        paper_manual_stop_ = -1;
         paper_index_ = 0;
         journal_->setRowCount(0);
         journal_->setProperty("journal_total", 0);
-        paper_source_ =
-            selected_->currentText() + " • " +
-            (synthetic_ ? QStringLiteral("СИНТЕТИЧЕСКОЕ ДЕМО") : QStringLiteral("АРХИВ MOEX, С ЗАДЕРЖКОЙ"));
+        paper_source_ = selected_->currentText() + " • " +
+                        (local_project_ ? QStringLiteral("ЛОКАЛЬНЫЙ ПРОЕКТ, НЕ ПРОВЕРЕН ОНЛАЙН")
+                         : synthetic_   ? QStringLiteral("СИНТЕТИЧЕСКОЕ ДЕМО")
+                                        : QStringLiteral("АРХИВ MOEX, С ЗАДЕРЖКОЙ"));
         update_paper();
     } catch (const std::exception &) {
         paper_.reset();
@@ -964,6 +1098,7 @@ void ResearchPanel::step_paper() {
 void ResearchPanel::stop_paper(const QString &why) {
     paper_timer_.stop();
     if (paper_) {
+        paper_manual_stop_ = static_cast<int>(paper_index_);
         paper_->request_stop(why.toStdString());
         if (paper_index_ < paper_bars_.size()) {
             try {
@@ -997,11 +1132,12 @@ void ResearchPanel::update_paper() {
                      : QString()));
     paper_chart_->set_lines(
         {{QStringLiteral("Виртуальный капитал"), QColor("#39d2b0"), points(r.equity), false}},
-        QStringLiteral("Виртуальный счёт • проигрывание свечей"),
+        live_paper_ ? QStringLiteral("Новые закрытые свечи MOEX • задержанный тренажёр")
+                    : QStringLiteral("Виртуальный счёт • проигрывание свечей"),
         QStringLiteral("Та же модель исполнения, что в бэктесте. Никаких запросов к торговому API."));
     journal_rows(journal_, r);
 }
-void ResearchPanel::set_test_view(int index) { tabs_->setCurrentIndex(std::clamp(index, 0, 4)); }
+void ResearchPanel::set_test_view(int index) { tabs_->setCurrentIndex(std::clamp(index, 0, 5)); }
 void ResearchPanel::start_online_test() {
     symbols_->setText("SBER, GAZP");
     period_->setCurrentIndex(1);
@@ -1075,6 +1211,8 @@ bool ResearchPanel::self_test() {
         temporary->calculate();
         delete temporary;
     }
+    if (!workbench_test())
+        return false;
     start_paper();
     for (int i = 0; i < 79; ++i)
         paper_->step(paper_bars_[paper_index_++]);

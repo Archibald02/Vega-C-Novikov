@@ -28,7 +28,7 @@ void text_if_changed(QLabel* item,const QString& text){if(item->text()!=text)ite
 QDoubleSpinBox* number(double value,double low=0.01,double high=1e12,int decimals=2){auto*w=new QDoubleSpinBox;w->setRange(low,high);w->setDecimals(decimals);w->setValue(value);w->setGroupSeparatorShown(true);return w;}
 }
 MainWindow::MainWindow(bool test_mode):test_mode_(test_mode){
-    setWindowTitle(QStringLiteral("Quant Price Live 5 • Российские акции"));resize(1440,1000);setMinimumSize(1000,720);
+    setWindowTitle(QStringLiteral("Quant Price Live 6 • Российские акции"));resize(1440,1000);setMinimumSize(1000,720);
     setStyleSheet(R"(
       QMainWindow,QWidget{background:#0b1420;color:#e7f0fa;font-family:'Segoe UI',sans-serif;font-size:12px;}
       QLabel{background:transparent;} QLineEdit,QComboBox,QSpinBox,QDoubleSpinBox{background:#162538;border:1px solid #31465d;border-radius:5px;padding:6px;min-height:20px;}
@@ -40,7 +40,7 @@ MainWindow::MainWindow(bool test_mode):test_mode_(test_mode){
       QTabWidget::pane{border:1px solid #25394e;} QSplitter::handle{background:#0b1420;height:8px;}
     )");
     auto* root=new QWidget;auto* scroll=new QScrollArea;scroll->setWidgetResizable(true);scroll->setFrameShape(QFrame::NoFrame);scroll->setWidget(root);setCentralWidget(scroll);auto* layout=new QVBoxLayout(root);layout->setContentsMargins(20,16,20,12);layout->setSpacing(10);
-    auto* heading=new QHBoxLayout;heading->addWidget(label("QUANT / PRICE LIVE 5","font-size:23px;font-weight:700;letter-spacing:2px;"));heading->addStretch();
+    auto* heading=new QHBoxLayout;heading->addWidget(label("QUANT / PRICE LIVE 6","font-size:23px;font-weight:700;letter-spacing:2px;"));heading->addStretch();
     heading->addWidget(label(QStringLiteral("MOEX • TQBR • C++17 / Qt"),"color:#85a1b9;"));layout->addLayout(heading);
     auto* settings=new QHBoxLayout;auto* left=new QFormLayout;auto* right=new QFormLayout;
     provider_=new QComboBox;provider_->addItems({QStringLiteral("MOEX ISS — с задержкой, без ключа"),QStringLiteral("АЛОР — WebSocket, боевой аккаунт"),QStringLiteral("ДЕМО — синтетические цены")});
@@ -81,7 +81,7 @@ MainWindow::MainWindow(bool test_mode):test_mode_(test_mode){
     tabs_->setCurrentIndex(0);
     split->addWidget(table_);split->addWidget(tabs_);split->setStretchFactor(0,1);split->setStretchFactor(1,3);layout->addWidget(split,1);
     resource_text_=label("","color:#7f99b1;font-size:11px;");layout->addWidget(resource_text_);
-    layout->addWidget(label(QStringLiteral("Индикаторы по принятым ценам, не по биржевым свечам. Горизонт прогноза — число обновлений. σ не годовая. Ключи и котировки не сохраняются на диск."),"color:#7f99b1;font-size:11px;"));
+    layout->addWidget(label(QStringLiteral("Индикаторы по принятым ценам, не по биржевым свечам. Горизонт прогноза — число обновлений. σ не годовая. Автоматического сохранения ключей и котировок нет."),"color:#7f99b1;font-size:11px;"));
     connect(start_,&QPushButton::clicked,this,&MainWindow::connect_feed);connect(stop_,&QPushButton::clicked,this,[this]{feed_.stop();set_controls(false);token_->clear();});
     connect(catalog_button_,&QPushButton::clicked,this,&MainWindow::show_catalog);connect(api,&QPushButton::clicked,this,[this]{tabs_->setCurrentIndex(4);});
     connect(&feed_,&MarketFeed::quote_received,this,&MainWindow::receive);connect(&feed_,&MarketFeed::status_changed,this,[this](const QString&s){text_if_changed(connection_,s);});
@@ -131,7 +131,7 @@ QWidget* MainWindow::performance_panel(){
 }
 QWidget* MainWindow::help_panel(){
     auto* page=new QWidget;auto* layout=new QVBoxLayout(page);layout->setContentsMargins(20,16,20,16);
-    auto* text=label(QStringLiteral("Основной режим MOEX ISS: регистрация, логин, пароль и ключ НЕ нужны. Свечи также загружаются напрямую из публичного API.\nНет аналитики посещений, рекламы, облачного аккаунта приложения и запросов к портфелю. IP-адрес видит сервер API, как при любом HTTPS-запросе.\nНастройки хранят только тикеры и параметры интерфейса; токены, цены, капитал и расчёты риска на диск не сохраняются.\n\nДополнительный режим АЛОР: зарегистрируйтесь на портале разработчика, привяжите боевой торговый аккаунт и выпустите Refresh token.\nОдной регистрации разработчика недостаточно. Тестовый контур не даёт реальные котировки.\n\nMOEX ISS: API-ключ для публичного режима не нужен; данные имеют задержку.\nПриложение не выполняет торговых операций. Токен вводится только в главном окне и не сохраняется."));text->setWordWrap(true);layout->addWidget(text);
+    auto* text=label(QStringLiteral("Основной режим MOEX ISS: регистрация, логин, пароль и ключ НЕ нужны. Свечи также загружаются напрямую из публичного API.\nНет аналитики посещений, рекламы, облачного аккаунта приложения и запросов к портфелю. IP-адрес видит сервер API, как при любом HTTPS-запросе.\nНастройки хранят только тикеры и параметры интерфейса; токены не сохраняются; цены, капитал и исследования можно явно экспортировать локально во вкладке лаборатории.\n\nДополнительный режим АЛОР: зарегистрируйтесь на портале разработчика, привяжите боевой торговый аккаунт и выпустите Refresh token.\nОдной регистрации разработчика недостаточно. Тестовый контур не даёт реальные котировки.\n\nMOEX ISS: API-ключ для публичного режима не нужен; данные имеют задержку.\nПриложение не выполняет торговых операций. Токен вводится только в главном окне и не сохраняется."));text->setWordWrap(true);layout->addWidget(text);
     auto add=[layout,this](const QString& name,const char* url){auto*b=new QPushButton(name);layout->addWidget(b);connect(b,&QPushButton::clicked,this,[url]{QDesktopServices::openUrl(QUrl(QString::fromLatin1(url)));});};
     add(QStringLiteral("АЛОР — получить Refresh token"),"https://alor.dev/open-api-tokens");add(QStringLiteral("АЛОР — инструкция подключения боевого аккаунта"),"https://alor.dev/docs/api/quick-start/prod-env");add(QStringLiteral("MOEX ISS — описание API и условий доступа"),"https://www.moex.com/a8531");add(QStringLiteral("Документация приложения"),"https://archibald02.github.io/Vega-C-Novikov/");auto* clear=new QPushButton(QStringLiteral("Отключиться и очистить настройки / данные сессии"));clear->setObjectName("resetLocalData");layout->addWidget(clear);connect(clear,&QPushButton::clicked,this,&MainWindow::reset_local_data);layout->addStretch();return page;
 }

@@ -89,6 +89,8 @@ struct SimConfig {
     double spread_bps = 2, slippage_bps = 2, allocation = 0.2;
     double stop_fraction = 0.02, target_fraction = 0.04;
     double risk_per_trade = 0.01, max_drawdown = 0.2, daily_loss = 0.05;
+    double tick_size = 0;     // zero only for synthetic/explicit manual metadata
+    int signal_delay = 0;     // additional closed bars before signal execution; stops remain active
     double participation = 0; // cap using PREVIOUS bar volume; zero disables this approximation
     std::int64_t lot = 1;
     int max_entries_per_day = 10, annual_periods = 0;
@@ -103,6 +105,7 @@ struct Metrics {
     double total_return = 0, max_drawdown = 0, turnover = 0, sharpe = unavailable(), sortino = unavailable(),
            cagr = unavailable(), calmar = unavailable();
     double profit_factor = unavailable(), win_rate = unavailable();
+    double fees = 0, execution_cost = 0; // cash commissions and adverse fill vs model trigger
     int fills = 0, closed_trades = 0;
 };
 struct SimResult {
@@ -141,7 +144,7 @@ class PaperEngine {
     double cash_ = 0, entry_price_ = 0, cost_basis_ = 0, peak_ = 0, session_equity_ = 0;
     double traded_ = 0, gross_profit_ = 0, gross_loss_ = 0, trade_profit_ = 0;
     std::int64_t units_ = 0, session_ = -1;
-    int entries_today_ = 0, wins_ = 0;
+    int entries_today_ = 0, wins_ = 0, entry_wait_ = 0, exit_wait_ = 0;
     bool pending_entry_ = false, pending_exit_ = false, halted_ = false, session_halted_ = false,
          bought_ = false, finished_ = false;
     std::int64_t liquidity_cap_ = 0;

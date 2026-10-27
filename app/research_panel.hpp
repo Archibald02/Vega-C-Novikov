@@ -1,11 +1,15 @@
 #pragma once
+#include "instrument_catalog.hpp"
 #include "market_history.hpp"
 #include "quant/research.hpp"
+#include "quant/robustness.hpp"
 #include "visual_chart.hpp"
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDateEdit>
 #include <QDoubleSpinBox>
 #include <QFutureWatcher>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
@@ -25,6 +29,11 @@ struct LabResult {
     std::vector<quant::Features> features;
     quant::SimResult simulation, baseline;
     quant::WalkForward walk;
+    quant::Robustness robustness;
+    quant::HoldoutResult holdout;
+    bool has_holdout = false;
+    QJsonObject parameters;
+    QString source, hash;
     QString error;
 };
 /** Standalone bounded research workspace. All broker interactions remain read-only. */
@@ -42,6 +51,55 @@ class ResearchPanel : public QWidget {
     void set_test_view(int index);
 
   private:
+    QWidget *workbench_page();
+    void setup_workbench();
+    void preflight();
+    void update_metadata();
+    QJsonObject configuration() const;
+    bool apply_configuration(const QJsonObject &object, bool validate_only = false);
+    quant::SimConfig configuration_settings(const QJsonObject &object) const;
+    bool save_project(const QString &path, bool include_account = false);
+    bool open_project(const QString &path);
+    QString fingerprint(const std::vector<quant::Bar> &bars) const;
+    QString report_html(bool compact = false) const;
+    void export_report(bool pdf);
+    void record_run(const LabResult &result);
+    void refresh_paper();
+    void start_live_paper();
+    void fetch_reference();
+    bool workbench_test();
+    QDateEdit *from_, *till_;
+    QCheckBox *custom_dates_, *reserve_, *expert_, *save_account_, *save_cash_, *manual_metadata_;
+    QSpinBox *gap_;
+    QDoubleSpinBox *tick_;
+    QLabel *preflight_, *holdout_status_, *metadata_, *reference_status_, *release_status_;
+    QTableWidget *stability_, *stress_, *runs_table_, *events_;
+    VisualChart *runs_chart_;
+    InstrumentCatalog catalog_;
+    MarketHistory live_loader_,
+        reference_loader_{nullptr, QUrl("https://iss.moex.com/iss/engines/stock/markets/index/securities/")};
+    QNetworkAccessManager study_network_;
+    QPointer<QNetworkReply> dividend_reply_, release_reply_;
+    QTimer live_timer_;
+    QString live_symbol_;
+    QJsonObject paper_parameters_;
+    bool local_project_ = false, exporting_ = false;
+    int live_interval_ = 24;
+    qint64 live_last_ = 0;
+    bool live_paper_ = false, evaluate_holdout_ = false;
+    quint64 study_generation_ = 0;
+    int paper_manual_stop_ = -1;
+    int attempts_ = 0;
+    QString holdout_key_;
+    struct SavedRun {
+        QString label, hash, source;
+        QJsonObject parameters;
+        quant::Metrics metrics;
+        std::vector<double> equity;
+        double oos = quant::unavailable();
+    };
+    std::vector<SavedRun> runs_;
+    std::map<QString, bool> holdout_used_;
     struct RuleUi {
         QCheckBox *enabled;
         QComboBox *lhs, *op, *rhs;

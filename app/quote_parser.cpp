@@ -74,6 +74,7 @@ QVector<Instrument> parse_catalog(const QByteArray& payload) {
     const auto block=QJsonDocument::fromJson(payload).object().value("securities").toObject();
     const auto columns=block.value("columns").toArray();
     auto index=[&columns](const QString& name) { for(int i=0;i<columns.size();++i) if(columns[i].toString()==name) return i; return -1; };
+    const int step=index("MINSTEP"), decimals=index("DECIMALS");
     const int code=index("SECID"), name=index("SHORTNAME"), lot=index("LOTSIZE"), status=index("STATUS");
     QVector<Instrument> result; QSet<QString> seen;
     if(code<0 || name<0 || lot<0 || status<0) return result;
@@ -83,7 +84,10 @@ QVector<Instrument> parse_catalog(const QByteArray& payload) {
         const auto symbol=at(code).toString(); const double size=at(lot).toDouble(0);
         if(at(status).toString()!="A" || !std::isfinite(size) || size<1 || size>1000000 || std::floor(size)!=size || seen.contains(symbol)) continue;
         try { if(parse_symbols(symbol).size()!=1 || parse_symbols(symbol).front()!=symbol) continue; } catch(...) { continue; }
-        result.push_back({symbol,at(name).toString(symbol),static_cast<int>(size)}); seen.insert(symbol);
+        const double tick=at(step).toDouble(0), digits=at(decimals).toDouble(2);
+        result.push_back({symbol,at(name).toString(symbol),static_cast<int>(size),
+            std::isfinite(tick)&&tick>0&&tick<=1e9?tick:0,
+            std::isfinite(digits)&&digits>=0&&digits<=10?static_cast<int>(digits):2}); seen.insert(symbol);
         if(result.size()>=5000) break;
     }
     std::sort(result.begin(),result.end(),[](const Instrument& a,const Instrument& b) {return a.symbol<b.symbol;});

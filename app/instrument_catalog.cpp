@@ -8,7 +8,7 @@ void InstrumentCatalog::load(bool force) {
     if(pending_) return;
     if(!force && !items_.isEmpty() && fetched_.secsTo(QDateTime::currentDateTimeUtc())<900) { emit updated(); return; }
     pending_=true;
-    QNetworkRequest request{QUrl("https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities.json?iss.meta=off&iss.only=securities&securities.columns=SECID,SHORTNAME,LOTSIZE,STATUS")};
+    QNetworkRequest request{QUrl("https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities.json?iss.meta=off&iss.only=securities&securities.columns=SECID,SHORTNAME,LOTSIZE,STATUS,MINSTEP,DECIMALS")};
     request_json(network_, request, this, [this](const HttpResult& result) {
         pending_ = false;
         if (!result.ok()) { emit failed(http_error_text(result)); return; }

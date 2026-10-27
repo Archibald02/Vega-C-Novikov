@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(QuantPriceLive VERSION 5.0.0 LANGUAGES CXX)
+project(QuantPriceLive VERSION 6.0.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -10,7 +10,7 @@ include(CTest)
 option(BUILD_GUI "Build native Qt desktop application" ON)
 option(BUILD_BENCHMARKS "Build Google Benchmark executable" ON)
 include(FetchContent)
-add_library(quant src/analytics.cpp src/indicators.cpp src/research.cpp)
+add_library(quant src/analytics.cpp src/indicators.cpp src/research.cpp src/robustness.cpp)
 target_include_directories(quant PUBLIC include)
 if(MSVC)
   target_compile_options(quant PRIVATE /W4)
@@ -22,7 +22,7 @@ if(BUILD_GUI)
   add_library(quote_parser app/quote_parser.cpp)
   target_include_directories(quote_parser PUBLIC app)
   target_link_libraries(quote_parser PUBLIC Qt6::Core)
-  add_library(live_widgets app/research_panel.cpp app/research_panel.hpp app/json_http.cpp app/market_history.cpp app/market_history.hpp app/visual_chart.cpp app/history_panel.cpp
+  add_library(live_widgets app/research_panel.cpp app/research_workbench.cpp app/research_panel.hpp app/json_http.cpp app/market_history.cpp app/market_history.hpp app/visual_chart.cpp app/history_panel.cpp
     app/main_window.cpp app/main_window.hpp
     app/instrument_catalog.cpp app/instrument_catalog.hpp app/catalog_dialog.cpp app/catalog_dialog.hpp app/resource_monitor.cpp
     app/chart_widget.cpp app/chart_widget.hpp app/market_feed.cpp app/market_feed.hpp)

@@ -14,6 +14,7 @@
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTimer>
+#include <QUrlQuery>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -50,7 +51,7 @@ HttpResult fetch(LocalServer& server,live::HttpLimits limits={1024,500},const QB
     QTimer::singleShot(1500,&loop,[&]{reply->abort();loop.quit();});loop.exec();
     if(!result)throw std::runtime_error("Transport test deadline exceeded");return *result;
 }
-bool wait_for(const std::function<bool()>& predicate) {if(predicate())return true;QEventLoop loop;QTimer timer;QObject::connect(&timer,&QTimer::timeout,&loop,[&]{if(predicate())loop.quit();});timer.start(5);QTimer::singleShot(2000,&loop,&QEventLoop::quit);loop.exec();return predicate();}
+bool wait_for(const std::function<bool()>& predicate,int timeout=2000) {if(predicate())return true;QEventLoop loop;QTimer timer;QObject::connect(&timer,&QTimer::timeout,&loop,[&]{if(predicate())loop.quit();});timer.start(5);QTimer::singleShot(timeout,&loop,&QEventLoop::quit);loop.exec();return predicate();}
 void events(int milliseconds) {QEventLoop loop;QTimer::singleShot(milliseconds,&loop,&QEventLoop::quit);loop.exec();}
 QByteArray moex_fixture() {return R"({"marketdata":{"columns":["SECID","LAST","SYSTIME"],"data":[["SBER",100,"2026-10-27 12:00:00"],["GAZP",200,"2026-10-27 12:00:00"]]}})";}
 }
@@ -138,6 +139,33 @@ TEST_CASE("Candles honor source rate limits without opening a login") {
     LocalServer server;server.handler=[](auto* socket,const auto&){respond(socket,"{}",429,"Retry-After: 120\r\n");};
     live::MarketHistory history(nullptr,server.url());int errors=0;QObject::connect(&history,&live::MarketHistory::failed,&history,[&](const auto&){++errors;});
     history.load("SBER",0);REQUIRE(wait_for([&]{return errors==1;}));history.load("GAZP",0,true);events(20);CHECK(errors==2);CHECK(server.received.size()==1);CHECK_FALSE(history.busy());
+}
+
+TEST_CASE("History paginates without repeated pages, publishes atomically and caps 5000 bars") {
+    LocalServer server;int pages=0;
+    server.handler=[&](auto* socket,const QByteArray& request) {
+        const auto path=QString::fromLatin1(request.split(' ').value(1));const int start=QUrlQuery(QUrl(path)).queryItemValue("start").toInt();
+        ++pages;QJsonArray rows;
+        for(int i=start;i<start+500;++i)rows.append(QJsonArray{QDate(2000,1,1).addDays(i).toString("yyyy-MM-dd")+" 00:00:00",100,101,99,100,10});
+        respond(socket,QJsonDocument(QJsonObject{{"candles",QJsonObject{{"columns",QJsonArray{"begin","open","high","low","close","volume"}},{"data",rows}}}}).toJson());
+    };
+    live::MarketHistory history(nullptr,server.url());int total=0,limited=0;
+    QObject::connect(&history,&live::MarketHistory::loaded,&history,[&](const QString&,int,const auto& bars,bool){total=bars.size();});
+    QObject::connect(&history,&live::MarketHistory::truncated,&history,[&](const QString&){++limited;});
+    history.load_range("SBER",QDate(2000,1,1),QDate(2019,12,31),24);
+    // Paging is spaced to avoid hammering ISS; ten pages take at least 1.35 s.
+    REQUIRE(wait_for([&]{return total==5000;},5000));CHECK(pages==10);CHECK(limited==1);CHECK_FALSE(history.busy());
+    history.load_range("SBER",QDate(2000,1,1),QDate(2019,12,31),24,true);history.cancel();events(30);CHECK(total==5000);CHECK_FALSE(history.busy());
+}
+TEST_CASE("A server that ignores pagination cannot loop or publish an incomplete success") {
+    LocalServer server;server.handler=[](auto* socket,const auto&) {
+        QJsonArray rows;for(int i=0;i<500;++i)rows.append(QJsonArray{QDate(2024,1,1).addDays(i).toString("yyyy-MM-dd")+" 00:00:00",100,101,99,100,10});
+        respond(socket,QJsonDocument(QJsonObject{{"candles",QJsonObject{{"columns",QJsonArray{"begin","open","high","low","close","volume"}},{"data",rows}}}}).toJson());
+    };
+    live::MarketHistory history(nullptr,server.url());int errors=0,success=0;
+    QObject::connect(&history,&live::MarketHistory::failed,&history,[&](const auto&){++errors;});QObject::connect(&history,&live::MarketHistory::loaded,&history,[&]{++success;});
+    history.load_range("SBER",QDate(2024,1,1),QDate(2026,1,1),24);
+    REQUIRE(wait_for([&]{return errors>0;}));CHECK(server.received.size()==2);CHECK(success==0);CHECK_FALSE(history.busy());
 }
 TEST_CASE("Seeded malformed input stress does not produce invalid quotes") {
     std::mt19937 random(431);for(int i=0;i<5000;++i){QByteArray bytes;const int n=random()%1024;bytes.resize(n);for(int j=0;j<n;++j)bytes[j]=static_cast<char>(random()%256);const auto q=live::parse_alor(bytes);CHECK_FALSE(q);CHECK(live::parse_moex(bytes).isEmpty());CHECK(live::parse_catalog(bytes).isEmpty());CHECK(live::parse_candles(QJsonDocument::fromJson(bytes)).isEmpty());}

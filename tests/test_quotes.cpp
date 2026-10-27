@@ -46,3 +46,8 @@ TEST_CASE("Catalog uses active instruments, normalizes columns and rejects bad l
     REQUIRE(items.size()==2);CHECK(items[0].symbol=="GAZP");CHECK(items[1].symbol=="SBER");CHECK(items[1].lot_size==10);CHECK(items[1].name=="Sber");
     CHECK(live::parse_catalog("bad json").isEmpty());CHECK(live::parse_catalog(R"({"securities":{"columns":["SECID"],"data":[["SBER"]]}})").isEmpty());
 }
+
+TEST_CASE("MOEX catalogue preserves lot and valid official price tick metadata") {
+    const auto items=live::parse_catalog(R"({"securities":{"columns":["SECID","SHORTNAME","LOTSIZE","STATUS","MINSTEP","DECIMALS"],"data":[["SBER","Сбер",10,"A",0.01,2],["GAZP","Газпром",10,"A",-1,3]]}})");
+    REQUIRE(items.size()==2);CHECK(items[1].symbol=="SBER");CHECK(items[1].lot_size==10);CHECK(items[1].tick_size==doctest::Approx(.01));CHECK(items[1].decimals==2);CHECK(items[0].tick_size==0);
+}

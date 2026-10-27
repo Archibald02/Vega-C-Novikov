@@ -1,5 +1,6 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "quant/research.hpp"
+#include "quant/robustness.hpp"
 #include <doctest/doctest.h>
 #include <fstream>
 #include <map>
@@ -353,4 +354,91 @@ TEST_CASE("Strategy EMA window is the same configurable window as candle analyti
     CHECK(correct);
     c.strategy.indicator_window = 20;
     CHECK(backtest(b, c).metrics.fills == 0);
+}
+
+TEST_CASE("Risk size budgets both sides of fees slippage and adverse tick rounding") {
+    auto c = base();
+    c.initial_cash = 100000;
+    c.risk_per_trade = .01;
+    c.stop_fraction = .02;
+    c.commission_rate = .001;
+    c.fixed_fee = 7;
+    c.spread_bps = 4;
+    c.slippage_bps = 3;
+    c.tick_size = .05;
+    auto data = bars({100., 100.});
+    data[0].low = 100.;
+    data[0].high = 100.;
+    PaperEngine engine(c);
+    engine.step(data[0]);
+    const auto r = engine.result();
+    REQUIRE(r.journal.front().quantity > 0);
+    const double buy = 100.05;
+    const double stop_fill = std::floor(buy * .98 * (1 - .0005) / .05 + 1e-10) * .05;
+    const double unit = buy - stop_fill + .001 * (buy + stop_fill);
+    const auto expected = static_cast<std::int64_t>(std::floor((1000. - 14) / unit));
+    CHECK(r.journal.front().price == doctest::Approx(buy));
+    CHECK(r.units == expected);
+    CHECK(r.units * unit + 14 <= 1000. + 1e-8);
+    CHECK((r.units + 1) * unit + 14 > 1000.);
+    c.fixed_fee = 600;
+    PaperEngine too_costly(c);
+    too_costly.step(data[0]);
+    CHECK(too_costly.result().units == 0);
+    c.tick_size = std::numeric_limits<double>::quiet_NaN();
+    CHECK_THROWS(PaperEngine{c});
+}
+TEST_CASE("Signal delay uses only completed observations and never delays emergency exits") {
+    auto c = base();
+    c.strategy.buy_hold = false;
+    c.signal_delay = 1;
+    c.strategy.entry.rules = {{Feature::Close, Feature::Constant, Compare::Above, 1, true}};
+    auto data = bars({100., 101., 102., 103.});
+    PaperEngine e(c);
+    e.step(data[0]);
+    CHECK(e.result().units == 0);
+    e.step(data[1]);
+    CHECK(e.result().units == 0);
+    e.step(data[2]);
+    CHECK(e.result().units > 0);
+    CHECK(e.result().journal.back().time == data[2].time);
+    e.request_stop();
+    e.step(data[3]);
+    CHECK(e.result().units == 0);
+}
+TEST_CASE("Final holdout parameter choice is unaffected by future prices and temporal embargo") {
+    std::vector<double> prices;
+    for (int i = 0; i < 300; ++i)
+        prices.push_back(100 + 10 * std::sin(i * .12) + i * .05);
+    const auto a = bars(prices);
+    auto modified = a;
+    for (std::size_t i = 240; i < modified.size(); ++i)
+        for (double *p : {&modified[i].open, &modified[i].close, &modified[i].high, &modified[i].low})
+            *p *= 2.;
+    auto c = base();
+    c.strategy.buy_hold = false;
+    const auto x = final_holdout(a, c, 240, 3), y = final_holdout(modified, c, 240, 3);
+    CHECK(x.frozen.strategy.fast == y.frozen.strategy.fast);
+    CHECK(x.frozen.strategy.slow == y.frozen.strategy.slow);
+    CHECK(x.test.times.size() == 57);
+    CHECK(x.test.start_time == a[243].time);
+    CHECK_THROWS(final_holdout(a, c, 20));
+    CHECK_THROWS(final_holdout(a, c, 299));
+}
+TEST_CASE("Robustness grid and deterministic stress remain bounded and cancellable") {
+    std::vector<double> prices;
+    for (int i = 0; i < 5000; ++i)
+        prices.push_back(100 + std::sin(i * .3));
+    auto data = bars(prices);
+    auto c = base();
+    const auto original = data;
+    const auto r = robustness(data, c);
+    CHECK(r.stability.size() == 9);
+    CHECK(r.stress.size() == 6);
+    CHECK(data.size() == original.size());
+    CHECK(data.back().close == original.back().close);
+    for (const auto &trial : r.stress)
+        CHECK(std::isfinite(trial.metrics.total_return));
+    std::atomic<bool> cancel{true};
+    CHECK(robustness(data, c, &cancel).stability.empty());
 }
