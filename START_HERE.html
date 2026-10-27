@@ -1,0 +1,383 @@
+<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Quant Price Live — гайд для Windows</title><style>body{font:17px/1.65 system-ui,sans-serif;max-width:1080px;margin:40px auto;padding:0 24px;color:#182b40;background:#f6f9fc}h1,h2{line-height:1.25;color:#123b5c}h2{margin-top:44px}pre{padding:18px;background:#e7eef6;overflow:auto;border-radius:8px;font-size:14px}code{font-family:Consolas,monospace}table{border-collapse:collapse;width:100%;font-size:14px}td,th{border:1px solid #c5d2df;padding:10px;text-align:left}a{color:#05699b}li{margin:7px 0}img{max-width:100%;border-radius:10px}.toc{padding:16px 24px;background:#e7f1f5;border-radius:8px}@media print{body{font-size:11pt;background:white;margin:0}pre,table{break-inside:avoid}h2{break-after:avoid}}</style><body><div class="toc">
+<ul>
+<li><a href="#quant-price-live-windows-github">Полный гайд: Quant Price Live, Windows и GitHub</a><ul>
+<li><a href="#1">1. Что изменилось</a></li>
+<li><a href="#2-windows-github">2. Получить Windows-приложение через GitHub — рекомендуемый первый путь</a></li>
+<li><a href="#3">3. Первый запуск: убедиться, что интерфейс работает</a></li>
+<li><a href="#4">4. Как подключить живой поток АЛОР</a></li>
+<li><a href="#5">5. Что означают таблица, график и настройки</a></li>
+<li><a href="#6-windows">6. Локальная сборка Windows — если хотите менять и запускать код</a></li>
+<li><a href="#7-benchmark">7. Тесты, benchmark, документация и упаковка</a></li>
+<li><a href="#8-actions">8. Как обновлять репозиторий и что проверять в Actions</a></li>
+<li><a href="#9">9. Частые проблемы</a></li>
+<li><a href="#10">10. Что сдавать по домашнему заданию</a></li>
+<li><a href="#11">11. Объяснение для защиты</a></li>
+<li><a href="#_1">Официальные ссылки</a></li>
+</ul>
+</li>
+</ul>
+</div>
+<h1 id="quant-price-live-windows-github">Полный гайд: Quant Price Live, Windows и GitHub</h1>
+<h2 id="1">1. Что изменилось</h2>
+<p>Это приложение с обычным окном Windows: таблица акций, график и настройки.
+CSV не требуется. Можно смотреть интернет-котировки MOEX ISS без ключа,
+подключить поток АЛОР с токеном или проверить интерфейс в демонстрации.
+Все исходники, тесты, CMake, benchmark, Doxygen и CI/CD входят в комплект.</p>
+<p>Важное различие источников:</p>
+<table>
+<thead>
+<tr>
+<th>Источник</th>
+<th>Что нужно</th>
+<th>Что показывает</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>АЛОР</td>
+<td>Боевой аккаунт и Refresh token</td>
+<td>Подписки на поток котировок российских акций</td>
+</tr>
+<tr>
+<td>MOEX ISS</td>
+<td>Только интернет</td>
+<td>Реальные биржевые данные, доступные с задержкой</td>
+</tr>
+<tr>
+<td>ДЕМО</td>
+<td>Ничего</td>
+<td>Синтетические цены для знакомства с окном</td>
+</tr>
+</tbody>
+</table>
+<p>Использование OpenAPI АЛОР заявлено бесплатным в FAQ брокера. Для реального потока
+одной регистрации разработчика недостаточно: нужен торговый аккаунт.
+Условия брокерского обслуживания проверяются отдельно. Тестовый контур передаёт
+симуляционные данные; в этом приложении он не используется.</p>
+<p>В исходном архиве <strong>нет готового Windows EXE</strong>. Его автоматически создаст GitHub Actions.
+Это позволяет получить приложение без установки C++ и Qt на собственный компьютер.
+Windows-пакет пока не собран в вашем аккаунте — это нужно сделать по разделу 2.</p>
+<h2 id="2-windows-github">2. Получить Windows-приложение через GitHub — рекомендуемый первый путь</h2>
+<ol>
+<li>Распакуйте архив в удобную папку. Внутри найдите CMakeLists.txt, app, src, include,
+   tests, benchmarks и папку .github. Именно эта папка — корень проекта.</li>
+<li>В GitHub нажмите <code>+</code> → New repository. Имя <strong>quant-price-live</strong>, видимость <strong>Public</strong>.
+   Включите создание README, затем Create repository.</li>
+<li>Проверьте, что основная ветка называется <strong>main</strong>.</li>
+<li>Откройте <strong>Settings → Pages → Build and deployment → Source → GitHub Actions</strong>.
+   Создавать предложенный шаблон workflow не нужно — он уже есть в комплекте.</li>
+<li>В локальном README.md замените Archibald02 своим логином. Если у репозитория
+   другое имя, измените и имя в ссылке документации.</li>
+<li>Вернитесь на вкладку Code → Add file → Upload files. Перетащите <strong>содержимое</strong>
+   корня проекта, включая .github, а не внешнюю папку целиком. CMakeLists.txt
+   должен оказаться непосредственно в корне репозитория.</li>
+<li>Напишите сообщение <code>Add live C++ Qt application</code>, затем Commit changes в main.</li>
+<li>Убедитесь, что в репозитории есть <code>.github/workflows/ci.yml</code>.
+   Если .github не загрузилась, Add file → Create new file → имя <code>.github/workflows/ci.yml</code>,
+   вставьте точное содержимое файла из комплекта и сохраните.</li>
+<li>Откройте Actions → <strong>Build, test, benchmark and docs</strong>. Если GitHub предлагает
+   включить workflows, включите. Дождитесь завершения. Установка Qt при первом
+   запуске может занять несколько минут; это установка среды сборки, не задержка приложения.</li>
+<li>Проверьте оба build: Ubuntu и Windows. Затем documentation и deploy.</li>
+<li>На странице запуска внизу найдите <strong>Artifacts → QuantPriceLive-Windows-x64</strong>.
+    Нажмите, скачайте ZIP и полностью распакуйте в отдельную папку.</li>
+<li>Запустите <strong>quant_price_live.exe</strong> двойным щелчком.
+    Не вытаскивайте один EXE из папки: рядом нужны DLL и подпапки платформенных плагинов.</li>
+</ol>
+<p>Если приложение сообщает об отсутствии VCRUNTIME/MSVCP, установите официальный
+<strong>Microsoft Visual C++ Redistributable x64</strong>:
+https://aka.ms/vs/17/release/vc_redist.x64.exe</p>
+<p>Сборка не подписана сертификатом издателя. При предупреждении Windows сверяйте
+происхождение файла с вашим собственным workflow, а не скачивайте заменяющие DLL с сайтов.</p>
+<p>Если репозиторий уже создан для первой версии, можно использовать его. Скопируйте
+новые файлы поверх рабочей копии, обновите README и workflow. Старые src/main.cpp,
+src/csv.cpp и data/prices.csv больше не используются и их можно удалить.
+Если имя осталось quant-price-lab, ссылка Pages должна содержать quant-price-lab.
+Для работы через GitHub Desktop см. раздел 8.</p>
+<h2 id="3">3. Первый запуск: убедиться, что интерфейс работает</h2>
+<ol>
+<li>В поле «Источник» выберите <strong>ДЕМО — синтетические цены</strong>.</li>
+<li>Оставьте SBER, GAZP, LKOH, YDEX.</li>
+<li>Нажмите <strong>Подключить</strong>. Появятся меняющиеся строки и график.</li>
+<li>Щёлкните другую строку — переключится график и карточки её показателей.</li>
+<li>Нажмите <strong>Отключить</strong>. Значения останутся видимыми, счётчик времени с ответа растёт.</li>
+</ol>
+<p>Демо явно подписано: это не реальные цены акций.</p>
+<p>Теперь выберите <strong>MOEX ISS — с задержкой, без ключа</strong> и нажмите Подключить.
+Программа получит котировки по интернету. Загрузка идёт асинхронно: окно доступно,
+пока сервер отвечает. Обновления запрашиваются каждые 5 секунд.</p>
+<p>У MOEX ISS есть задержка биржевых данных. Опрос раз в 5 секунд её не убирает.
+«Время данных» в этом режиме — время снимка ISS, не время последней сделки.
+Вне торгов цены могут не меняться. Ошибка или отсутствие LAST не заменяются вымышленной ценой.</p>
+<h2 id="4">4. Как подключить живой поток АЛОР</h2>
+<p>Официальный пошаговый источник:
+https://alor.dev/docs/api/quick-start/prod-env</p>
+<ol>
+<li>Создайте отдельную учётную запись разработчика на https://alor.dev/ и подтвердите email.</li>
+<li>В разделе https://alor.dev/open-api-tokens привяжите действующий торговый аккаунт
+   по инструкции провайдера. Если такого аккаунта нет, доступ к боевому потоку пока не появится.</li>
+<li>На странице токенов выпустите <strong>Refresh token для боевого контура</strong>.</li>
+<li>В приложении выберите <strong>АЛОР — WebSocket, боевой аккаунт</strong>.</li>
+<li>Вставьте Refresh token в скрытое поле «Токен АЛОР».</li>
+<li>Оставьте, например, <code>SBER, GAZP</code>, интервал «Поток» 250 мс, окно 20.</li>
+<li>Нажмите Подключить. Сначала идёт авторизация, затем открытие WebSocket и подписки.</li>
+<li>Во время торгов должны появиться котировки. Если подписка отклонена,
+   проверьте тип токена, аккаунт, права и тикеры. Нажмите Отключить перед повторной попыткой.</li>
+</ol>
+<p>Программа сама получает краткосрочный AccessToken и обновляет соединение каждые 25 минут.
+Вручную копировать AccessToken вместо Refresh token не нужно.
+Токен не сохраняется в настройках и очищается из поля после отключения;
+после перезапуска его надо ввести снова. Не присылайте его в чат, не помещайте
+в исходники, скриншоты, репозиторий или GitHub Secrets для этого проекта.
+Для чтения котировок нет необходимости добавлять торговые функции в код.</p>
+<p>Параметр 250 мс задаёт интервал выдачи сообщений у провайдера. Это не обещание
+задержки 250 мс от биржи до экрана. Нет новых сделок — последняя цена может не изменяться.
+При сетевом обрыве идут автоматические повторы с увеличением интервала до 30 секунд.
+Если токен отозван или неверен, соединение останавливается с сообщением об ошибке.</p>
+<h2 id="5">5. Что означают таблица, график и настройки</h2>
+<ul>
+<li><strong>Тикеры</strong> — от 1 до 20 инструментов режима TQBR; разделители — запятая, пробел, <code>;</code>.
+  Набор зависит от доступности у источника. Это не универсальный поиск всех рынков и бордов.</li>
+<li><strong>Цена</strong> — последняя переданная цена сделки или снимка.</li>
+<li><strong>Bid / Ask</strong> — лучшие переданные цены спроса и предложения. <code>—</code> означает отсутствие поля.</li>
+<li><strong>Изм. дня</strong> — процент изменения относительно предыдущего закрытия из ответа источника.</li>
+<li><strong>Время данных</strong> — дата и время данных, отображённые в локальном часовом поясе компьютера.
+  АЛОР: время последней сделки; ISS: SYSTIME снимка.</li>
+<li><strong>Ответ, с</strong> — сколько секунд прошло после приёма последнего подходящего ответа для тикера.
+  Это не сетевая задержка и не доказательство свежести биржевой цены.</li>
+<li><strong>SMA / σ: N цен</strong> — размер расчётного окна, от 3 до 2000. Во время прогрева
+  среднее считается по имеющимся ценам, карточка показывает фактическое количество.</li>
+<li><strong>σ доходностей обновлений</strong> — выборочное стандартное отклонение относительных
+  изменений между принятыми ценами. Оно показано в процентах и не является годовым.</li>
+</ul>
+<p>График строится с момента подключения и хранит последние 2000 точек на тикер.
+История перед запуском не загружается. Это обеспечивает быстрый старт без CSV и больших файлов.
+Одинаковые время и цена не добавляют повторную точку; устаревшие сообщения отбрасываются.
+Перерисовка происходит до 4 раз в секунду независимо от приёма данных.</p>
+<p>Чтобы изменить источник, тикеры или параметры, сначала нажмите Отключить.
+После нового подключения графики и расчётные окна начинаются заново.
+Приложение сохраняет только выбранные тикеры и настройки, а не полученные цены.</p>
+<h2 id="6-windows">6. Локальная сборка Windows — если хотите менять и запускать код</h2>
+<p>Установите Git for Windows, CMake с добавлением в PATH и Visual Studio Build Tools 2022
+с компонентом <strong>Desktop development with C++</strong>, MSVC и Windows SDK:</p>
+<ul>
+<li>Git: https://git-scm.com/download/win</li>
+<li>CMake: https://cmake.org/download/</li>
+<li>Build Tools: https://visualstudio.microsoft.com/downloads/</li>
+</ul>
+<p>Нужен также Qt 6.8.3 MSVC 2022 64-bit с Qt WebSockets.
+Один из способов установить его — бесплатный инструмент aqtinstall. С установленным Python:</p>
+<pre><code class="language-powershell">py -m pip install aqtinstall
+py -m aqt install-qt windows desktop 6.8.3 win64_msvc2022_64 -m qtwebsockets -O C:\Qt
+</code></pre>
+<p>Ожидаемая папка: <code>C:\Qt\6.8.3\msvc2022_64</code>. Проверьте наличие bin\qmake.exe
+и bin\Qt6WebSockets.dll. Если выбран другой путь, измените команды ниже.
+Этот способ не требует аккаунта Qt; используйте исходные открытые пакеты.</p>
+<p>Откройте <strong>Developer PowerShell for VS 2022</strong>, затем:</p>
+<pre><code class="language-powershell">cd C:\Projects\quant-price-live
+cmake -S . -B build -G &quot;Visual Studio 17 2022&quot; -A x64 -DCMAKE_PREFIX_PATH=&quot;C:/Qt/6.8.3/msvc2022_64&quot;
+cmake --build build --config Release --parallel 2
+$env:PATH = &quot;C:\Qt\6.8.3\msvc2022_64\bin;&quot; + $env:PATH
+ctest --test-dir build -C Release --output-on-failure
+.\build\Release\quant_price_live.exe
+</code></pre>
+<p>При первой конфигурации CMake скачает doctest и Google Benchmark. Это однократная
+подготовка сборки, не часть каждого запуска программы. Для Windows используйте именно
+комплект Qt MSVC, не MinGW, если собираете приведёнными командами MSVC.</p>
+<h2 id="7-benchmark">7. Тесты, benchmark, документация и упаковка</h2>
+<p>Unit-тесты и автономная проверка окна:</p>
+<pre><code class="language-powershell">ctest --test-dir build -C Release --output-on-failure --verbose
+</code></pre>
+<p>Проверки не требуют токена и сети. Успех: 100% tests passed.
+Большое число assertions связано с проверкой скользящего окна на каждом из 10 000 шагов,
+это не такое же число отдельных сценариев.</p>
+<p>Benchmark:</p>
+<pre><code class="language-powershell">.\build\Release\quant_benchmark.exe --benchmark_min_time=0.1s
+.\build\Release\quant_benchmark.exe --benchmark_min_time=0.1s --benchmark_out=build/benchmark.json --benchmark_out_format=json
+</code></pre>
+<p>8 строк измерений: пакетные доходности, SMA и волатильность на двух размерах входа;
+обновление RollingSeries для окон 20 и 2000. Time и CPU — время, Iterations — повторы.
+Это проверка вычислений, не задержки интернет-канала.</p>
+<p>Для папки с EXE и библиотеками Qt:</p>
+<pre><code class="language-powershell">New-Item -ItemType Directory -Force dist
+Copy-Item .\build\Release\quant_price_live.exe .\dist\
+&amp; &quot;C:\Qt\6.8.3\msvc2022_64\bin\windeployqt.exe&quot; --release --no-translations --no-compiler-runtime .\dist\quant_price_live.exe
+Copy-Item .\licenses .\dist\licenses -Recurse -Force
+Copy-Item .\THIRD_PARTY.md,.\LICENSE .\dist\
+.\dist\quant_price_live.exe
+</code></pre>
+<p>Для переноса нужна вся dist, включая лицензии и plugins. На другом компьютере установите
+официальный Visual C++ Redistributable, если его ещё нет. Qt в PATH там не требуется.
+CI делает упаковку автоматически и сохраняет artifact.</p>
+<p>Для Doxygen установите его с https://www.doxygen.nl/download.html и выполните из корня:</p>
+<pre><code class="language-powershell">doxygen Doxyfile
+Start-Process .\build\docs\html\index.html
+</code></pre>
+<p>Graphviz не требуется. В CI документация создаётся автоматически и публикуется в main.</p>
+<h2 id="8-actions">8. Как обновлять репозиторий и что проверять в Actions</h2>
+<p>Удобный вариант — GitHub Desktop: https://desktop.github.com/
+Войдите → File → Clone repository → выберите свой репозиторий → клонируйте в новую папку.
+Изменяйте файлы этой копии. Для переноса комплекта скопируйте его содержимое в корень
+копии, сохранив служебную .git. Затем проверьте diff в Desktop → Commit to main → Push origin.
+Commit без Push не запускает удалённые проверки.</p>
+<p>В Actions у последнего запуска должны быть успешны:</p>
+<ol>
+<li>build в Linux и Windows: сборка, unit-тесты, payload-тесты, GUI smoke test, benchmark.</li>
+<li>В Windows — Package Windows application и Check packaged GUI.</li>
+<li>documentation — Doxygen HTML.</li>
+<li>deploy — GitHub Pages.</li>
+</ol>
+<p>Внизу доступны artifacts: <code>QuantPriceLive-Windows-x64</code>, <code>benchmark-Windows</code>,
+<code>benchmark-Linux</code>, <code>doxygen-html</code>. Время benchmark видно прямо в шагах журнала.
+Если запуск упал после настройки Pages, используйте Re-run all jobs, либо
+Actions → выбранный workflow → Run workflow → main.</p>
+<p>GitHub Pages публикует документацию, а не само Windows-приложение.
+Не загружайте папки build, dist, Qt SDK, токены и личные данные в репозиторий.</p>
+<h2 id="9">9. Частые проблемы</h2>
+<table>
+<thead>
+<tr>
+<th>Проблема</th>
+<th>Что проверить</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Actions не появляется</td>
+<td>Путь .github/workflows/ci.yml; push; разрешение GitHub Actions</td>
+</tr>
+<tr>
+<td>CMake не видит Qt6</td>
+<td>CMAKE_PREFIX_PATH указывает на папку msvc2022_64, где есть lib/cmake/Qt6</td>
+</tr>
+<tr>
+<td>Не найден Qt6WebSockets</td>
+<td>Модуль qtwebsockets установлен именно для выбранной версии/комплекта</td>
+</tr>
+<tr>
+<td>Ошибка Visual Studio generator</td>
+<td>Установлен Build Tools 2022 с C++; запускается Developer PowerShell</td>
+</tr>
+<tr>
+<td>Старый build мешает</td>
+<td>Удалите только сгенерированную папку build и повторите конфигурацию</td>
+</tr>
+<tr>
+<td>EXE не видит Qt6 DLL</td>
+<td>Запуск из dist после windeployqt либо Qt bin добавлен в PATH терминала</td>
+</tr>
+<tr>
+<td>Не найден VCRUNTIME/MSVCP</td>
+<td>Установите официальный Visual C++ Redistributable x64</td>
+</tr>
+<tr>
+<td>Не найден платформенный plugin</td>
+<td>Распакуйте весь artifact, сохраните подпапку platforms рядом с EXE</td>
+</tr>
+<tr>
+<td>MOEX без цены</td>
+<td>Проверьте тикер, TQBR, соединение и доступность LAST; другой тикер может работать</td>
+</tr>
+<tr>
+<td>MOEX цена «старая»</td>
+<td>Этот источник с задержкой; частый опрос не делает его real-time</td>
+</tr>
+<tr>
+<td>АЛОР не авторизуется</td>
+<td>Нужен Refresh token боевого контура, а не AccessToken/тестовый токен</td>
+</tr>
+<tr>
+<td>Поток открыт, цены стоят</td>
+<td>Проверьте торговую сессию и ликвидность; следите за временем данных</td>
+</tr>
+<tr>
+<td>После ошибки кнопка Подключить недоступна</td>
+<td>Нажмите Отключить, проверьте настройки, подключите повторно</td>
+</tr>
+<tr>
+<td>Pages 404</td>
+<td>Source=GitHub Actions, ветка main, успешный deploy, правильная ссылка README</td>
+</tr>
+</tbody>
+</table>
+<p>Не отключайте проверку TLS и не вставляйте токены в URL ради отладки.
+При сетевом сбое программа не подменяет реальные котировки демонстрационными.
+Если у вас уже есть аккаунт другого брокера, для его API понадобится отдельный адаптер:
+вставка произвольного адреса сайта в эту версию не поддерживается.</p>
+<h2 id="10">10. Что сдавать по домашнему заданию</h2>
+<table>
+<thead>
+<tr>
+<th>Критерий</th>
+<th style="text-align: right;">Баллы</th>
+<th>Подтверждение</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Публичный репозиторий, структура и README</td>
+<td style="text-align: right;">2</td>
+<td>Code, статус Public</td>
+</tr>
+<tr>
+<td>CMake и автоматическая сборка</td>
+<td style="text-align: right;">4</td>
+<td>Успешные build при push</td>
+</tr>
+<tr>
+<td>C++ unit-тесты</td>
+<td style="text-align: right;">4</td>
+<td>doctest в журнале CI</td>
+</tr>
+<tr>
+<td>Benchmark в CI</td>
+<td style="text-align: right;">4</td>
+<td>Измерения Google Benchmark в журнале</td>
+</tr>
+<tr>
+<td>Doxygen с публикацией</td>
+<td style="text-align: right;">4</td>
+<td>documentation/deploy и работающая ссылка README</td>
+</tr>
+<tr>
+<td>AGENTS.md в корне</td>
+<td style="text-align: right;">2</td>
+<td>Файл с назначением, командами и ограничениями</td>
+</tr>
+</tbody>
+</table>
+<p>Пункты 2–5 засчитываются полностью только при успешном CI/CD.
+Перед сдачей откройте последний запуск, сайт документации и Windows-приложение.
+Убедитесь, что в README нет Archibald02.</p>
+<p>Текст сдачи после проверки, заменив логин:</p>
+<p>«Репозиторий: https://github.com/Archibald02/Vega-C-Novikov
+Документация: https://archibald02.github.io/Vega-C-Novikov/
+Приложение на C++17/Qt показывает котировки российских акций из интернет-источников.
+Настроены CMake, GitHub Actions, doctest, Google Benchmark и Doxygen.
+Сборка, тесты, benchmark и публикация прошли в последнем запуске Actions».</p>
+<p>Последнее утверждение используйте только после фактического успеха вашего workflow.</p>
+<h2 id="11">11. Объяснение для защиты</h2>
+<ul>
+<li>«Приложение получает котировки через асинхронные API. В UI нет ожидания сети».</li>
+<li>«АЛОР использует WebSocket; MOEX ISS — HTTP-опрос с задержкой данных».</li>
+<li>«Скользящее окно обновляется за постоянное время; история ограничена по размеру».</li>
+<li>«Тесты проверяют математику, удаление старых наблюдений и разбор сообщений».</li>
+<li>«Benchmark измеряет вычисления отдельно от сети и интерфейса».</li>
+<li>«σ по нерегулярным обновлениям не выдаётся за годовую волатильность».</li>
+<li>«CMake описывает цели, а CI собирает приложение и создаёт Windows artifact».</li>
+<li>«Doxygen документирует публичный API, Pages публикует HTML».</li>
+<li>«Ключ не хранится в репозитории, тесты CI не зависят от брокерского счёта».</li>
+</ul>
+<p>Подробные формулы и ограничения находятся в docs/theory.md.
+Покажите таблицу с источником, переключение графика, расчёт RollingSeries, один тест,
+зелёный Actions, журнал benchmark и страницу документации.</p>
+<h2 id="_1">Официальные ссылки</h2>
+<ul>
+<li>АЛОР, FAQ и бесплатность API: https://www.alorbroker.ru/faq</li>
+<li>Боевой доступ: https://alor.dev/docs/api/quick-start/prod-env</li>
+<li>Раздел токенов: https://alor.dev/open-api-tokens</li>
+<li>Подписки котировок: https://alor.dev/docs/api/websocket/data-subscriptions/QuotesSubscribe</li>
+<li>MOEX ISS: https://www.moex.com/a8531</li>
+<li>Qt deployment: https://doc.qt.io/qt-6/windows-deployment.html</li>
+<li>GitHub Pages workflow: https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages</li>
+</ul><h2>Вид приложения в демонстрационном режиме</h2><p>На изображении синтетические цены.</p><img src="docs/preview-demo.png" alt="Окно Quant Price Live в демонстрационном режиме"></body></html>

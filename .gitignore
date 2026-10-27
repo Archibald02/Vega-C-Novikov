@@ -1,0 +1,9 @@
+build*/
+dist/
+.vs/
+.vscode/
+*.user
+*.log
+.env
+.env.*
+*.token

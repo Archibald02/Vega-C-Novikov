@@ -1,0 +1,15 @@
+PROJECT_NAME = "Quant Price Live"
+PROJECT_BRIEF = "C++17 / Qt desktop monitor for Russian equities"
+OUTPUT_DIRECTORY = build/docs
+INPUT = README.md include src app docs/theory.md
+RECURSIVE = YES
+FILE_PATTERNS = *.hpp *.cpp *.md
+USE_MDFILE_AS_MAINPAGE = README.md
+EXTRACT_ALL = YES
+GENERATE_HTML = YES
+GENERATE_LATEX = NO
+HAVE_DOT = NO
+QUIET = YES
+WARN_IF_UNDOCUMENTED = NO
+WARN_AS_ERROR = YES
+HTML_OUTPUT = html

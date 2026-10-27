@@ -1,0 +1,119 @@
+name: Build, test, benchmark and docs
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            qt_arch: linux_gcc_64
+          - os: windows-latest
+            qt_arch: win64_msvc2022_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Qt 6.8.3
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          arch: ${{ matrix.qt_arch }}
+          modules: qtwebsockets
+          cache: true
+      - name: Configure Release
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build --config Release --parallel 2
+      - name: Unit tests, provider payloads and GUI smoke test
+        run: ctest --test-dir build -C Release --output-on-failure --verbose
+      - name: Benchmark (Linux)
+        if: runner.os == 'Linux'
+        run: ./build/quant_benchmark --benchmark_min_time=0.1s --benchmark_out=build/benchmark.json --benchmark_out_format=json
+      - name: Benchmark (Windows)
+        if: runner.os == 'Windows'
+        run: .\build\Release\quant_benchmark.exe --benchmark_min_time=0.1s --benchmark_out=build/benchmark.json --benchmark_out_format=json
+      - name: Save benchmark report
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-${{ runner.os }}
+          path: build/benchmark.json
+          if-no-files-found: error
+      - name: Package Windows application
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item build/Release/quant_price_live.exe dist/
+          windeployqt --release --no-translations --no-compiler-runtime dist/quant_price_live.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item README.md,GUIDE_WINDOWS_RU.md,START_HERE.html,THIRD_PARTY.md,LICENSE dist/
+          Copy-Item licenses dist/licenses -Recurse
+          $licenses = Join-Path $env:QT_ROOT_DIR 'Licenses'
+          if (Test-Path $licenses) { Copy-Item $licenses dist/QtLicenses -Recurse }
+      - name: Check packaged GUI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          $env:QT_PLUGIN_PATH = (Resolve-Path dist).Path
+          $env:QT_QPA_PLATFORM_PLUGIN_PATH = (Resolve-Path dist/platforms).Path
+          $process = Start-Process -FilePath ./dist/quant_price_live.exe -ArgumentList '--smoke-test' -Wait -PassThru
+          exit $process.ExitCode
+      - name: Save Windows application
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: QuantPriceLive-Windows-x64
+          path: dist/
+          if-no-files-found: error
+  documentation:
+    permissions:
+      contents: read
+      pages: write
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Doxygen
+        run: sudo apt-get update && sudo apt-get install -y doxygen
+      - name: Generate Doxygen HTML
+        run: doxygen Doxyfile
+      - name: Upload documentation for review
+        uses: actions/upload-artifact@v4
+        with:
+          name: doxygen-html
+          path: build/docs/html
+          if-no-files-found: error
+      - name: Configure Pages
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/configure-pages@v5
+      - name: Upload Pages artifact
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: build/docs/html
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: documentation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - name: Deploy documentation
+        id: deployment
+        uses: actions/deploy-pages@v4
