@@ -15,9 +15,15 @@ namespace {
 double number(const QJsonValue& value) {
     return value.isDouble() ? value.toDouble() : std::numeric_limits<double>::quiet_NaN();
 }
-bool positive(double x) { return std::isfinite(x) && x > 0; }
+bool positive(double x) { return std::isfinite(x) && x > 0 && x <= 1e12; }
+bool valid_symbol(const QString& symbol) {
+    static const QRegularExpression expression("^[A-Z0-9][A-Z0-9._-]{0,19}$");
+    return expression.match(symbol).hasMatch();
+}
+void sanitize(Quote& q) { if (!positive(q.bid)) q.bid = NAN; if (!positive(q.ask)) q.ask = NAN; if (!std::isfinite(q.change_percent) || std::abs(q.change_percent) > 1e6) q.change_percent = NAN; }
 }
 std::optional<Quote> parse_alor(const QByteArray& payload) {
+    if (payload.size() > 64 * 1024) return std::nullopt;
     const auto doc = QJsonDocument::fromJson(payload);
     if (!doc.isObject()) return std::nullopt;
     const auto data = doc.object().value("data").toObject();
@@ -28,13 +34,15 @@ std::optional<Quote> parse_alor(const QByteArray& payload) {
     q.ask = number(data.value("ask"));
     q.change_percent = number(data.value("change_percent"));
     const double timestamp = number(data.value("last_price_timestamp"));
-    if (q.symbol.isEmpty() || !positive(q.last) || !std::isfinite(timestamp)
+    if (!valid_symbol(q.symbol) || !positive(q.last) || !std::isfinite(timestamp)
         || timestamp <= 0 || timestamp > 32503680000.0) return std::nullopt;
     q.market_time_ms = static_cast<qint64>(timestamp * 1000);
+    sanitize(q);
     return q;
 }
 QVector<Quote> parse_moex(const QByteArray& payload) {
     QVector<Quote> result;
+    if (payload.size() > 1024 * 1024) return result;
     const auto block = QJsonDocument::fromJson(payload).object().value("marketdata").toObject();
     const auto cols = block.value("columns").toArray();
     auto col = [&cols](const QString& key) {
@@ -53,14 +61,16 @@ QVector<Quote> parse_moex(const QByteArray& payload) {
         // SYSTIME is the ISS snapshot time in Moscow. It is not a trade timestamp.
         const auto date = QDateTime::fromString(at(systime).toString(), "yyyy-MM-dd HH:mm:ss");
         const QDateTime moscow(date.date(), date.time(), QTimeZone("Europe/Moscow"));
-        if (q.symbol.isEmpty() || !positive(q.last) || !date.isValid() || !moscow.isValid()) continue;
+        if (!valid_symbol(q.symbol) || !positive(q.last) || !date.isValid() || !moscow.isValid()) continue;
         q.market_time_ms = moscow.toMSecsSinceEpoch();
-        result.push_back(q);
+        if (moscow.date().year() < 1990 || moscow.date().year() > 3000) continue;
+        sanitize(q); result.push_back(q); if (result.size() >= 5000) break;
     }
     return result;
 }
 
 QVector<Instrument> parse_catalog(const QByteArray& payload) {
+    if (payload.size() > 1024 * 1024) return {};
     const auto block=QJsonDocument::fromJson(payload).object().value("securities").toObject();
     const auto columns=block.value("columns").toArray();
     auto index=[&columns](const QString& name) { for(int i=0;i<columns.size();++i) if(columns[i].toString()==name) return i; return -1; };
@@ -80,6 +90,7 @@ QVector<Instrument> parse_catalog(const QByteArray& payload) {
     return result;
 }
 QStringList parse_symbols(const QString& input) {
+    if (input.size() > 1024) throw std::invalid_argument("Ticker input too long");
     const auto parts = input.toUpper().split(QRegularExpression("[,;\\s]+"), Qt::SkipEmptyParts);
     QStringList result; QSet<QString> seen;
     const QRegularExpression valid("^[A-Z0-9][A-Z0-9._-]{0,19}$");

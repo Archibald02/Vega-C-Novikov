@@ -2,6 +2,8 @@
 #include "chart_widget.hpp"
 #include "instrument_catalog.hpp"
 #include "market_feed.hpp"
+#include "history_panel.hpp"
+#include "visual_chart.hpp"
 #include "resource_monitor.hpp"
 #include "quant/rolling.hpp"
 #include <QCheckBox>
@@ -20,8 +22,14 @@ namespace live {
 class MainWindow : public QMainWindow {
 public:
     explicit MainWindow(bool test_mode=false);
+    ~MainWindow() override { feed_.disconnect(this); feed_.stop(); }
     void start_demo_test(int symbols=4);
     void start_moex_test();
+    void start_soak_test();
+    bool soak_ready() const;
+    bool exercise_visuals_test();
+    bool exercise_privacy_test();
+    void select_visual_test(int index);
     bool has_demo_data() const;
     bool has_any_data() const;
     bool exercise_tools_test();
@@ -57,6 +65,9 @@ private:
     QWidget* risk_panel();
     QWidget* help_panel();
     QWidget* performance_panel();
+    QWidget* comparison_panel();
+    void update_comparison();
+    void reset_local_data();
     void arm_alert();
     void show_catalog();
     MarketFeed feed_;
@@ -72,6 +83,11 @@ private:
     QTableWidget* table_;
     QTabWidget* tabs_;
     ChartWidget* chart_;
+    HistoryPanel* candles_;
+    VisualChart *comparison_, *forecast_chart_;
+    QLabel* token_label_;
+    bool comparison_dirty_ = true;
+    qint64 session_start_ms_ = 0;
     QTimer render_timer_,maintenance_timer_;
     QStringList tickers_;
     std::map<QString,Row> rows_;

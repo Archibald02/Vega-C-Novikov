@@ -30,8 +30,17 @@ jobs:
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
       - name: Build
         run: cmake --build build --config Release --parallel 2
-      - name: Formula, provider, GUI tools and bounded history tests
+      - name: Formula, network/privacy, visual GUI and bounded history tests
         run: ctest --test-dir build -C Release --output-on-failure --verbose
+      - name: Address and undefined behavior sanitizers (Linux)
+        if: runner.os == 'Linux'
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+          UBSAN_OPTIONS: halt_on_error=1
+        run: |
+          cmake -S . -B build-sanitized -DCMAKE_BUILD_TYPE=Debug -DBUILD_BENCHMARKS=OFF -DFETCHCONTENT_SOURCE_DIR_DOCTEST="$PWD/build/_deps/doctest-src" -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build build-sanitized --parallel 2
+          ctest --test-dir build-sanitized --output-on-failure
       - name: Benchmark (Linux)
         if: runner.os == 'Linux'
         run: ./build/quant_benchmark --benchmark_min_time=0.1s --benchmark_out=build/benchmark.json --benchmark_out_format=json
@@ -54,7 +63,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           # windeployqt includes qwindows, but the headless package test also needs offscreen.
           Copy-Item (Join-Path $env:QT_ROOT_DIR 'plugins/platforms/qoffscreen.dll') dist/platforms/
-          Copy-Item README.md,GUIDE_WINDOWS_RU.md,START_HERE.html,THIRD_PARTY.md,LICENSE dist/
+          Copy-Item README.md,GUIDE_WINDOWS_RU.md,START_HERE.html,THIRD_PARTY.md,PRIVACY.md,VERIFICATION.md,LICENSE dist/
           Copy-Item licenses dist/licenses -Recurse
           Copy-Item docs dist/docs -Recurse
           $licenses = Join-Path $env:QT_ROOT_DIR 'Licenses'
@@ -73,12 +82,15 @@ jobs:
           $exe = (Resolve-Path dist/quant_price_live.exe).Path
           $stdout = Join-Path $env:RUNNER_TEMP 'packaged-gui-stdout.log'
           $stderr = Join-Path $env:RUNNER_TEMP 'packaged-gui-stderr.log'
-          $process = Start-Process -FilePath $exe -ArgumentList '--tools-test' -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          foreach ($check in @('--visuals-test','--privacy-test')) {
+          $process = Start-Process -FilePath $exe -ArgumentList $check -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
           $finished = $process.WaitForExit(20000)
           Get-Content $stdout -ErrorAction SilentlyContinue
           Get-Content $stderr -ErrorAction SilentlyContinue
           if (-not $finished) { Stop-Process -Id $process.Id -Force; throw 'Packaged GUI did not exit within 20 seconds' }
-          exit $process.ExitCode
+          if ($process.ExitCode -ne 0) { exit $process.ExitCode }
+          }
+          exit 0
       - name: Save Windows application
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
