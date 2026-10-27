@@ -77,7 +77,7 @@ struct RuleGroup {
     bool all = true;
 };
 struct Strategy {
-    int fast = 10, slow = 30;
+    int fast = 10, slow = 30, indicator_window = 20;
     RuleGroup entry{{Rule{}}, true};
     RuleGroup exit{{Rule{Feature::FastSma, Feature::SlowSma, Compare::CrossBelow, 0, true}}, true};
     bool buy_hold = false;

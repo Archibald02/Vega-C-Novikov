@@ -653,6 +653,7 @@ QWidget *ResearchPanel::paper_page() {
 quant::SimConfig ResearchPanel::settings() const {
     quant::SimConfig c;
     c.strategy.fast = fast_->value();
+    c.strategy.indicator_window = window_->value();
     c.strategy.slow = slow_->value();
     if (c.strategy.fast >= c.strategy.slow)
         throw std::invalid_argument("SMA fast must be smaller than slow");

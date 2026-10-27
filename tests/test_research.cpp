@@ -335,3 +335,22 @@ TEST_CASE("Long virtual session has bounded equity and journal; invalid windows 
     CHECK_THROWS(CandleFeatures(-1, 20));
     CHECK_THROWS(CandleFeatures(10, 1000000000));
 }
+
+TEST_CASE("Strategy EMA window is the same configurable window as candle analytics") {
+    auto c = base();
+    c.strategy.buy_hold = false;
+    c.liquidate_end = false;
+    c.strategy.indicator_window = 3;
+    c.strategy.entry.rules = {{Feature::Close, Feature::Ema, Compare::Above, 0, true}};
+    c.strategy.exit.rules.clear();
+    auto b = bars({10, 11, 12, 13, 14});
+    const auto short_window = backtest(b, c);
+    REQUIRE(short_window.metrics.fills == 1);
+    bool correct = false;
+    for (const auto &event : short_window.journal)
+        if (event.quantity > 0)
+            correct = event.time == b[3].time;
+    CHECK(correct);
+    c.strategy.indicator_window = 20;
+    CHECK(backtest(b, c).metrics.fills == 0);
+}

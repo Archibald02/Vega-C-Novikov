@@ -414,8 +414,8 @@ bool evaluate(const RuleGroup &g, const Features &p, const Features &c) {
     return any && result;
 }
 PaperEngine::PaperEngine(const SimConfig &c)
-    : config_(c), features_(c.strategy.fast, c.strategy.slow), cash_(c.initial_cash), peak_(c.initial_cash),
-      session_equity_(c.initial_cash) {
+    : config_(c), features_(c.strategy.fast, c.strategy.slow, c.strategy.indicator_window),
+      cash_(c.initial_cash), peak_(c.initial_cash), session_equity_(c.initial_cash) {
     validate_config(c);
     current_.fill(unavailable());
     previous_ = current_;
