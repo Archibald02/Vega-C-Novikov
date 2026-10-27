@@ -96,7 +96,9 @@ jobs:
       - name: Install Doxygen
         run: sudo apt-get update && sudo apt-get install -y doxygen
       - name: Generate Doxygen HTML
-        run: doxygen Doxyfile
+        run: |
+          mkdir -p build/docs
+          doxygen Doxyfile
       - name: Upload documentation for review
         uses: actions/upload-artifact@v4
         with:
