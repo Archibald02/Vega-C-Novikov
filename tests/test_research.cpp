@@ -442,3 +442,37 @@ TEST_CASE("Robustness grid and deterministic stress remain bounded and cancellab
     std::atomic<bool> cancel{true};
     CHECK(robustness(data, c, &cancel).stability.empty());
 }
+
+TEST_CASE("Session limits use supplied historical timezone offset rather than fixed current Moscow offset") {
+    auto c = base();
+    c.strategy.buy_hold = false;
+    c.max_entries_per_day = 1;
+    c.strategy.entry.rules = {{Feature::Close, Feature::Constant, Compare::Above, 1, true}};
+    c.strategy.exit.rules = {{Feature::Close, Feature::Constant, Compare::Above, 1, true}};
+    std::vector<Bar> data;
+    // 2013 Moscow was UTC+4. 19:00 UTC is the prior date, 20:00 UTC starts the next session date.
+    const std::int64_t start = 1383159600000LL;
+    for (int i = 0; i < 5; ++i)
+        data.push_back(
+            {start + i * 1800000LL, start + (i + 1) * 1800000LL, 100, 100, 100, 100, 10000, 14400});
+    PaperEngine historical(c);
+    for (const auto &bar : data)
+        historical.step(bar);
+    auto current = data;
+    for (auto &bar : current)
+        bar.utc_offset_seconds = 10800;
+    PaperEngine fixed(c);
+    for (const auto &bar : current)
+        fixed.step(bar);
+    int a = 0, b = 0;
+    for (const auto &event : historical.result().journal)
+        if (event.quantity > 0)
+            ++a;
+    for (const auto &event : fixed.result().journal)
+        if (event.quantity > 0)
+            ++b;
+    CHECK(a == 2);
+    CHECK(b == 1);
+    data[0].utc_offset_seconds = 60000;
+    CHECK_THROWS(validate_bars(data));
+}

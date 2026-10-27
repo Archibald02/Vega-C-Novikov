@@ -326,7 +326,8 @@ ResearchPanel::ResearchPanel(QWidget *parent) : QWidget(parent) {
                     if (!accepted.empty() &&
                         b.time_ms - accepted.back().time > (preset == 2 ? 3600000 : 86400000))
                         ++gaps;
-                    accepted.push_back({b.time_ms, end, b.open, b.high, b.low, b.close, b.volume});
+                    accepted.push_back(
+                        {b.time_ms, end, b.open, b.high, b.low, b.close, b.volume, start.offsetFromUtc()});
                 }
                 data_[symbol] = std::move(accepted);
                 diagnostics_ << QStringLiteral(
@@ -1046,7 +1047,10 @@ void ResearchPanel::demo() {
                                 std::exp(.0005 * i + .035 * std::sin(i * .11 + k) + .009 * std::sin(i * .73)),
                          close = open * (1 + .005 * std::sin(i * .41 + k));
             data_[names[k]].push_back({start, start + 86400000, open, std::max(open, close) * 1.006,
-                                       std::min(open, close) * .994, close, 10000.0 + (i % 17) * 1000});
+                                       std::min(open, close) * .994, close, 10000.0 + (i % 17) * 1000,
+                                       QDateTime::fromMSecsSinceEpoch(start)
+                                           .toTimeZone(QTimeZone("Europe/Moscow"))
+                                           .offsetFromUtc()});
             ++i;
         }
         selected_->addItem(names[k]);

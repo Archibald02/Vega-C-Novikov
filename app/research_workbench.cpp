@@ -55,7 +55,7 @@ QJsonArray encode_bars(const std::vector<quant::Bar> &bars) {
     QJsonArray out;
     for (const auto &b : bars)
         out.append(QJsonArray{static_cast<double>(b.time), static_cast<double>(b.end), b.open, b.high, b.low,
-                              b.close, b.volume});
+                              b.close, b.volume, b.utc_offset_seconds});
     return out;
 }
 std::vector<quant::Bar> decode_bars(const QJsonArray &array) {
@@ -64,7 +64,7 @@ std::vector<quant::Bar> decode_bars(const QJsonArray &array) {
     std::vector<quant::Bar> bars;
     for (const auto &item : array) {
         const auto r = item.toArray();
-        if (r.size() != 7)
+        if (r.size() != 7 && r.size() != 8)
             throw std::invalid_argument("Bar schema");
         for (const auto &v : r)
             if (!v.isDouble() || !std::isfinite(v.toDouble()))
@@ -72,8 +72,14 @@ std::vector<quant::Bar> decode_bars(const QJsonArray &array) {
         if (r[0].toDouble() < 1 || r[0].toDouble() > 32503680000000. || r[1].toDouble() < 1 ||
             r[1].toDouble() > 32503852800000.)
             throw std::invalid_argument("Time range");
+        const auto offset = QDateTime::fromMSecsSinceEpoch(static_cast<qint64>(r[0].toDouble()))
+                                .toTimeZone(QTimeZone("Europe/Moscow"))
+                                .offsetFromUtc();
+        if (r.size() == 8 && r[7].toDouble() != offset)
+            throw std::invalid_argument("Session zone");
         bars.push_back({static_cast<qint64>(r[0].toDouble()), static_cast<qint64>(r[1].toDouble()),
-                        r[2].toDouble(), r[3].toDouble(), r[4].toDouble(), r[5].toDouble(), r[6].toDouble()});
+                        r[2].toDouble(), r[3].toDouble(), r[4].toDouble(), r[5].toDouble(), r[6].toDouble(),
+                        offset});
     }
     if (!bars.empty())
         quant::validate_bars(bars);
@@ -436,33 +442,42 @@ void ResearchPanel::setup_workbench() {
             paper_status_->setText(
                 QStringLiteral("Новые свечи: %1. Состояние сохранено в RAM; повтор через 60 с.").arg(e));
     });
-    connect(&live_loader_, &MarketHistory::loaded, this,
-            [this](const QString &s, int, const QVector<Candle> &candles, bool) {
-                if (!live_paper_ || !paper_ || s != live_symbol_)
-                    return;
-                const auto now = QDateTime::currentMSecsSinceEpoch();
-                try {
-                    for (const auto &c : candles) {
-                        const auto end = c.time_ms + (live_interval_ == 60 ? 3600000 : 86400000);
-                        // Public feeds may lag. Do not consume a still-publishing interval immediately after
-                        // its boundary.
-                        if (c.time_ms <= live_last_ || end > now - 20 * 60000)
-                            continue;
-                        quant::Bar b{c.time_ms, end, c.open, c.high, c.low, c.close, c.volume};
-                        if (paper_bars_.size() >= 5000)
-                            throw std::length_error("Session cap");
-                        paper_->step(b);
-                        paper_bars_.push_back(b);
-                        paper_index_ = paper_bars_.size();
-                        live_last_ = c.time_ms;
-                    }
-                    update_paper();
-                } catch (...) {
-                    paper_->request_stop("Лимит 5000 свечей или ошибка новых данных");
-                    live_timer_.stop();
-                    update_paper();
+    connect(
+        &live_loader_, &MarketHistory::loaded, this,
+        [this](const QString &s, int, const QVector<Candle> &candles, bool) {
+            if (!live_paper_ || !paper_ || s != live_symbol_)
+                return;
+            const auto now = QDateTime::currentMSecsSinceEpoch();
+            try {
+                for (const auto &c : candles) {
+                    const auto end = c.time_ms + (live_interval_ == 60 ? 3600000 : 86400000);
+                    // Public feeds may lag. Do not consume a still-publishing interval immediately after
+                    // its boundary.
+                    if (c.time_ms <= live_last_ || end > now - 20 * 60000)
+                        continue;
+                    quant::Bar b{
+                        c.time_ms,
+                        end,
+                        c.open,
+                        c.high,
+                        c.low,
+                        c.close,
+                        c.volume,
+                        QDateTime::fromMSecsSinceEpoch(c.time_ms).toTimeZone(QTimeZone("Europe/Moscow")).offsetFromUtc()};
+                    if (paper_bars_.size() >= 5000)
+                        throw std::length_error("Session cap");
+                    paper_->step(b);
+                    paper_bars_.push_back(b);
+                    paper_index_ = paper_bars_.size();
+                    live_last_ = c.time_ms;
                 }
-            });
+                update_paper();
+            } catch (...) {
+                paper_->request_stop("Лимит 5000 свечей или ошибка новых данных");
+                live_timer_.stop();
+                update_paper();
+            }
+        });
 }
 QJsonObject ResearchPanel::configuration() const {
     QJsonObject values;

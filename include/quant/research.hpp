@@ -9,6 +9,7 @@ namespace quant {
 struct Bar {
     std::int64_t time = 0, end = 0;
     double open = 0, high = 0, low = 0, close = 0, volume = 0;
+    int utc_offset_seconds = 10800; // Session zone at bar start; caller supplies historic offset.
 };
 void validate_bars(const std::vector<Bar> &bars);
 struct Distribution {

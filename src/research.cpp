@@ -64,10 +64,10 @@ void validate_bars(const std::vector<Bar> &bars) {
         for (double p : {b.open, b.high, b.low, b.close})
             if (!std::isfinite(p) || p < 1e-9 || p > 1e12)
                 throw std::invalid_argument("Invalid OHLC price");
-        if (!std::isfinite(b.volume) || b.volume < 0 || b.volume > 1e18 ||
-            b.low > std::min(b.open, b.close) || b.high < std::max(b.open, b.close) || b.time <= last ||
-            b.time > 32503680000000LL || b.time < previous_end || b.end <= b.time ||
-            b.end - b.time > 2 * day_ms)
+        if (!std::isfinite(b.volume) || b.volume < 0 || b.volume > 1e18 || b.utc_offset_seconds < -50400 ||
+            b.utc_offset_seconds > 50400 || b.low > std::min(b.open, b.close) ||
+            b.high < std::max(b.open, b.close) || b.time <= last || b.time > 32503680000000LL ||
+            b.time < previous_end || b.end <= b.time || b.end - b.time > 2 * day_ms)
             throw std::invalid_argument("Invalid bar chronology or range");
         last = b.time;
         previous_end = b.end;
@@ -560,7 +560,7 @@ void PaperEngine::step(const Bar &b) {
     validate_bars({b});
     if (last_.time && (b.time <= last_.time || b.time < last_.end))
         throw std::invalid_argument("Non-increasing engine time");
-    const auto day = (b.time + 3 * 3600000LL) / day_ms;
+    const auto day = (b.time + static_cast<std::int64_t>(b.utc_offset_seconds) * 1000) / day_ms;
     if (day != session_) {
         session_ = day;
         entries_today_ = 0;
