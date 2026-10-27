@@ -52,6 +52,8 @@ jobs:
           Copy-Item build/Release/quant_price_live.exe dist/
           windeployqt --release --no-translations --no-compiler-runtime dist/quant_price_live.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # windeployqt includes qwindows, but the headless package test also needs offscreen.
+          Copy-Item (Join-Path $env:QT_ROOT_DIR 'plugins/platforms/qoffscreen.dll') dist/platforms/
           Copy-Item README.md,GUIDE_WINDOWS_RU.md,START_HERE.html,THIRD_PARTY.md,LICENSE dist/
           Copy-Item licenses dist/licenses -Recurse
           $licenses = Join-Path $env:QT_ROOT_DIR 'Licenses'
