@@ -23,6 +23,7 @@
 #include <QWheelEvent>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 namespace live {
 namespace {
 QString fmt(double v, int decimals = 2) {
@@ -1127,8 +1128,10 @@ bool MainWindow::exercise_lab_test() {
     return lab_->self_test();
 }
 bool MainWindow::exercise_visuals_test() {
-    if (!exercise_tools_test())
+    if (!exercise_tools_test()) {
+        std::fprintf(stderr, "Visual precondition: tools scenario failed\n");
         return false;
+    }
     QVector<Candle> bars;
     const auto base = QDateTime::currentMSecsSinceEpoch() - 90LL * 86400000;
     for (int i = 0; i < 90; ++i) {
@@ -1145,12 +1148,20 @@ bool MainWindow::exercise_visuals_test() {
         resize(size);
         for (int tab = 0; tab < tabs_->count(); ++tab) {
             tabs_->setCurrentIndex(tab);
-            QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+            // Nested scroll areas post a second layout request after their viewport changes.
+            // Drain bounded layout passes before measuring the final client geometry.
+            for (int pass = 0; pass < 3; ++pass) {
+                QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+                QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+            }
             if (tab == 7 && !rect().contains(QRect(lab_->mapTo(this, QPoint(0, 0)), lab_->size()))) {
-                qWarning("Research viewport does not fit: window=%dx%d pane=%dx%d minimum=%dx%d hint=%dx%d",
-                         width(), height(), lab_->width(), lab_->height(), lab_->minimumWidth(),
-                         lab_->minimumHeight(), lab_->minimumSizeHint().width(),
-                         lab_->minimumSizeHint().height());
+                const auto origin = lab_->mapTo(this, QPoint(0, 0));
+                std::fprintf(stderr,
+                             "Research viewport does not fit: window=%dx%d pane=%dx%d origin=%d,%d "
+                             "minimum=%dx%d hint=%dx%d\n",
+                             width(), height(), lab_->width(), lab_->height(), origin.x(), origin.y(),
+                             lab_->minimumWidth(), lab_->minimumHeight(), lab_->minimumSizeHint().width(),
+                             lab_->minimumSizeHint().height());
                 return false;
             }
         }

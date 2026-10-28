@@ -32,6 +32,15 @@ jobs:
         run: cmake --build build --config Release --parallel 2
       - name: Formula, network/privacy, visual GUI and bounded history tests
         run: ctest --test-dir build -C Release --output-on-failure --verbose
+      - name: Save failed GUI diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-diagnostics-${{ runner.os }}
+          path: |
+            build/gui-visuals.png
+            build/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore
       - name: Address and undefined behavior sanitizers (Linux)
         if: runner.os == 'Linux'
         env:
