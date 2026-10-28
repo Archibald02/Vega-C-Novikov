@@ -1,6 +1,7 @@
 #include "json_http.hpp"
 #include "quote_parser.hpp"
 #include "research_panel.hpp"
+#include "ui_helpers.hpp"
 #include <QBuffer>
 #include <QCryptographicHash>
 #include <QDesktopServices>
@@ -103,7 +104,7 @@ bool write_report(const QString &html, const QString &path, bool pdf) {
         QPdfWriter writer(&file);
         writer.setResolution(120);
         writer.setPageSize(QPageSize(QPageSize::A4));
-        writer.setTitle("Quant Price Live 6.0.0");
+        writer.setTitle("Quant Price Live 6.1.0");
         QTextDocument doc;
         doc.setHtml(html);
         doc.print(&writer);
@@ -123,54 +124,48 @@ QVector<QPointF> decimate(const std::vector<double> &values) {
 QWidget *ResearchPanel::workbench_page() {
     auto *page = new QWidget;
     auto *l = new QVBoxLayout(page);
-    auto *wizard = new QHBoxLayout;
-    const QStringList steps{QStringLiteral("1 Данные"),       QStringLiteral("2 Качество"),
-                            QStringLiteral("3 Правила"),      QStringLiteral("4 Бэктест"),
-                            QStringLiteral("5 Устойчивость"), QStringLiteral("6 Счёт")};
-    const int targets[]{0, 4, 1, 2, 5, 3};
-    for (int i = 0; i < 6; ++i) {
-        auto *b = new QPushButton(steps[i]);
-        wizard->addWidget(b);
-        connect(b, &QPushButton::clicked, this, [this, i, targets] {
-            tabs_->setCurrentIndex(targets[i]);
-            if (i == 0)
-                symbols_->setFocus();
-            if (i == 1)
-                preflight();
-        });
-    }
-    l->addLayout(wizard);
-    expert_ = new QCheckBox(QStringLiteral("Экспертный режим: лаги тестов и таблица индикаторов"));
-    expert_->setChecked(true);
-    l->addWidget(expert_);
+    auto *robust_layout = l;
+    expert_ = new QCheckBox(QStringLiteral("Экспертные параметры"));
+    expert_->setToolTip(QStringLiteral(
+        "Открывает лаги тестов и подробную диагностику. Настройки расчёта при переключении не меняются."));
     preflight_ = note(QStringLiteral("Проверка готовности появится после выбора данных."));
-    l->addWidget(preflight_);
+    quality_layout_->addWidget(preflight_);
+    auto *metadata_controls = new QWidget;
+    auto *metadata_layout = new QVBoxLayout(metadata_controls);
     auto *metadata_row = new QHBoxLayout;
     auto *fetch_metadata = new QPushButton(QStringLiteral("Лот и шаг из MOEX"));
+    fetch_metadata->setObjectName("loadMetadata");
     metadata_row->addWidget(fetch_metadata);
+    lot_->setPrefix(QStringLiteral("Лот: "));
+    metadata_row->addWidget(lot_);
     manual_metadata_ = new QCheckBox(QStringLiteral("Метаданные проверены вручную"));
-    metadata_row->addWidget(manual_metadata_);
+    metadata_layout->addWidget(manual_metadata_);
     tick_ = new QDoubleSpinBox;
     tick_->setDecimals(8);
     tick_->setRange(0, 1e9);
     tick_->setValue(0);
     tick_->setPrefix(QStringLiteral("Шаг ₽ "));
     metadata_row->addWidget(tick_);
-    l->addLayout(metadata_row);
+    metadata_layout->insertLayout(0, metadata_row);
     metadata_ = note(QStringLiteral(
         "ДЕМО допускает условный лот/шаг. Для MOEX нужны метаданные или явная ручная проверка."));
-    l->addWidget(metadata_);
+    metadata_layout->addWidget(metadata_);
+    data_layout_->addWidget(
+        ui::fold(QStringLiteral("Лот и шаг цены • загружаются автоматически"), metadata_controls));
     connect(fetch_metadata, &QPushButton::clicked, this, [this] { catalog_.load(true); });
     connect(&catalog_, &InstrumentCatalog::updated, this, &ResearchPanel::update_metadata);
     connect(&catalog_, &InstrumentCatalog::failed, this, [this](const QString &e) { metadata_->setText(e); });
     auto *split = new QHBoxLayout;
-    reserve_ = new QCheckBox(QStringLiteral("Скрывать последние 20% истории (финальный holdout)"));
+    reserve_ = new QCheckBox(QStringLiteral("Оставить последние 20% для финальной проверки"));
     reserve_->setChecked(true);
     gap_ = new QSpinBox;
     gap_->setRange(0, 100);
     gap_->setPrefix(QStringLiteral("Разрыв, свечей "));
-    auto *final = new QPushButton(QStringLiteral("Зафиксировать и открыть финальную проверку"));
-    split->addWidget(reserve_);
+    auto *final = new QPushButton(QStringLiteral("Открыть отложенные 20% истории"));
+    data_layout_->addWidget(reserve_);
+    data_layout_->addWidget(
+        note(QStringLiteral("Эта часть истории не участвует в подборе настроек. Откройте её один раз на шаге "
+                            "«Устойчивость», когда стратегия уже выбрана.")));
     split->addWidget(gap_);
     split->addWidget(final);
     l->addLayout(split);
@@ -214,19 +209,26 @@ QWidget *ResearchPanel::workbench_page() {
     l->addWidget(stress_);
     runs_table_ =
         grid({QStringLiteral("Запуск"), QStringLiteral("Чистый результат, %"), QStringLiteral("Просадка, %"),
-              QStringLiteral("Оборот"), QStringLiteral("Издержки, ₽"), QStringLiteral("OOS WF, %"),
-              QStringLiteral("Отпечаток данных")});
+              QStringLiteral("Оборот"), QStringLiteral("Издержки, ₽"), QStringLiteral("Следующие отрезки, %"),
+              QStringLiteral("Код данных")});
     l->addWidget(runs_table_);
     runs_chart_ = new VisualChart;
     l->addWidget(runs_chart_);
     l->addWidget(note(QStringLiteral("В памяти — последние 10 запусков; на графике последние 6, капитал "
                                      "нормирован к 100. Сравнивайте одинаковые периоды и источник. Издержки "
                                      "включены в результат, но отдельный налоговый расчёт не выполняется.")));
+    project_page_ = new QWidget;
+    l = new QVBoxLayout(project_page_);
+    auto *project_layout = l;
+    l->addWidget(note(QStringLiteral("Проект сохраняет настройки для продолжения работы. Отчёт фиксирует "
+                                     "последний завершённый расчёт. Файлы остаются на вашем компьютере.")));
+    result_context_ = note(QStringLiteral("Отчёт ещё не рассчитан."));
+    l->addWidget(result_context_);
     auto *files = new QHBoxLayout;
-    auto *save = new QPushButton(QStringLiteral("Сохранить проект…"));
+    auto *save = new QPushButton(QStringLiteral("Сохранить настройки…"));
     auto *open = new QPushButton(QStringLiteral("Открыть проект…"));
-    auto *html = new QPushButton(QStringLiteral("Отчёт HTML…"));
-    auto *pdf = new QPushButton(QStringLiteral("Отчёт PDF…"));
+    auto *html = new QPushButton(QStringLiteral("Экспорт HTML…"));
+    auto *pdf = new QPushButton(QStringLiteral("Экспорт PDF…"));
     for (auto *b : {save, open, html, pdf})
         files->addWidget(b);
     l->addLayout(files);
@@ -258,10 +260,11 @@ QWidget *ResearchPanel::workbench_page() {
     connect(html, &QPushButton::clicked, this, [this] { export_report(false); });
     connect(pdf, &QPushButton::clicked, this, [this] { export_report(true); });
     auto *live = new QPushButton(QStringLiteral("Новый счёт: новые закрытые свечи MOEX"));
-    l->addWidget(live);
+    live->setText(QStringLiteral("Следить за новыми свечами MOEX (с задержкой)"));
+    qobject_cast<QVBoxLayout *>(tabs_->widget(3)->layout())->insertWidget(2, live);
     connect(live, &QPushButton::clicked, this, &ResearchPanel::start_live_paper);
-    auto *reference =
-        new QPushButton(QStringLiteral("Проверить календарные разрывы и корпоративные события"));
+    l = quality_layout_;
+    auto *reference = new QPushButton(QStringLiteral("Сверить пропуски с торговыми датами MOEX"));
     l->addWidget(reference);
     connect(reference, &QPushButton::clicked, this, &ResearchPanel::fetch_reference);
     reference_status_ = note(QStringLiteral(
@@ -271,11 +274,23 @@ QWidget *ResearchPanel::workbench_page() {
     events_ =
         grid({QStringLiteral("Дата МСК"), QStringLiteral("Тип"), QStringLiteral("Наблюдение / источник")});
     l->addWidget(events_);
+    about_page_ = new QWidget;
+    l = new QVBoxLayout(about_page_);
+    l->addWidget(note(QStringLiteral("Короткий словарь")));
+    l->addWidget(note(QStringLiteral(
+        "Свеча — цены открытия, максимума, минимума и закрытия за час или день.\nSMA / EMA — скользящие "
+        "средние, сглаживают колебания цены.\nRSI — индикатор силы движения; значения от 0 до 100.\nПросадка "
+        "— падение капитала от предыдущего максимума.\nСпред — разница между ценами покупки и продажи. 1 "
+        "б.п. = 0,01%.\nБэктест — виртуальная проверка правил на прошлых свечах.\nWalk-forward — подбор "
+        "настроек на одном отрезке и проверка на следующем.\nHoldout — отдельный финальный отрезок, который "
+        "не используют при подборе.\nOOS — результат на данных вне обучения.\nSharpe / Sortino — доходность "
+        "относительно изменчивости / отрицательных отклонений.\nНедоступно (—) — показатель нельзя корректно "
+        "вычислить; это не нулевой результат.")));
     auto *release = new QPushButton(QStringLiteral("Версия и проверка обновлений"));
     l->addWidget(release);
     release_status_ =
         note(QStringLiteral(
-                 "Quant Price Live 6.0.0 • C++17 / Qt %1 • %2 • %3\nWindows 10/11 x64; если отсутствует "
+                 "Quant Price Live 6.1.0 • C++17 / Qt %1 • %2 • %3\nWindows 10/11 x64; если отсутствует "
                  "MSVCP140.dll/VCRUNTIME140.dll — установите официальный Microsoft Visual C++ "
                  "Redistributable x64. При запуске приложение не проверяет обновления и ничего не загружает.")
                  .arg(qVersion(), QSysInfo::prettyProductName(), QSysInfo::currentCpuArchitecture()));
@@ -291,13 +306,13 @@ QWidget *ResearchPanel::workbench_page() {
                 release_reply_.clear();
                 if (!r.ok()) {
                     release_status_->setText(QStringLiteral(
-                        "Версия приложения 6.0.0. Публичного релиза нет или API недоступен. Проверенные "
+                        "Версия приложения 6.1.0. Публичного релиза нет или API недоступен. Проверенные "
                         "сборки находятся в GitHub Actions; обновление устанавливается вручную."));
                     return;
                 }
                 const auto tag = r.document.object().value("tag_name").toString().left(80);
                 release_status_->setText(
-                    QStringLiteral("Установлена 6.0.0; последний опубликованный релиз: %1. Сравните версию "
+                    QStringLiteral("Установлена 6.1.0; последний опубликованный релиз: %1. Сравните версию "
                                    "на GitHub перед ручной установкой. Автоматической замены файлов нет.")
                         .arg(tag));
             },
@@ -315,10 +330,9 @@ QWidget *ResearchPanel::workbench_page() {
     }
     l->addLayout(links);
     l->addStretch();
-    auto *scroll = new QScrollArea;
-    scroll->setWidgetResizable(true);
-    scroll->setWidget(page);
-    return scroll;
+    project_layout->addStretch();
+    robust_layout->addStretch();
+    return page;
 }
 void ResearchPanel::setup_workbench() {
     const QList<QPair<QString, QObject *>> parameters{{"window", window_},
@@ -366,11 +380,7 @@ void ResearchPanel::setup_workbench() {
             rules[i].value->setObjectName(prefix + "value");
         }
     }
-    connect(expert_, &QCheckBox::toggled, this, [this](bool on) {
-        for (auto *w : {lags_, adf_lags_, kpss_lags_})
-            w->setVisible(on);
-        features_table_->setVisible(on);
-    });
+    connect(expert_, &QCheckBox::toggled, this, [this](bool on) { analytics_expert_->setVisible(on); });
     connect(manual_metadata_, &QCheckBox::toggled, this, [this](bool checked) {
         if (!checked)
             update_metadata();
@@ -613,7 +623,7 @@ bool ResearchPanel::save_project(const QString &path, bool include_account) {
     parameters.insert("values", values);
     QJsonObject project{{"format", "QuantPriceLive"},
                         {"schema", 1},
-                        {"app_version", "6.0.0"},
+                        {"app_version", "6.1.0"},
                         {"parameters", parameters},
                         {"attempts", attempts_}};
     QJsonArray seen;
@@ -717,6 +727,8 @@ bool ResearchPanel::open_project(const QString &path) {
         paper_source_ = QStringLiteral("ЛОКАЛЬНЫЙ ПРОЕКТ • ") + paper.value("source").toString().left(256);
         synthetic_ = root.value("synthetic").toBool();
         local_project_ = true;
+        source_dirty_ = false;
+        result_current_ = false;
         selected_->clear();
         for (const auto &p : data_)
             selected_->addItem(p.first);
@@ -747,6 +759,7 @@ bool ResearchPanel::open_project(const QString &path) {
         if (paper_)
             update_paper();
         preflight();
+        update_journey();
         return true;
     } catch (...) {
         apply_configuration(old);
@@ -1105,7 +1118,7 @@ QString ResearchPanel::report_html(bool compact) const {
                        "исследование</title><style>body{font:14px sans-serif;max-width:1100px;margin:30px "
                        "auto;color:#172a40}table{border-collapse:collapse;width:100%}td,th{border:1px solid "
                        "#b7c5d2;padding:5px;text-align:left}pre{white-space:pre-wrap;word-break:break-all}"
-                       "img{max-width:100%}</style><h1>Quant Price Live 6.0.0 — учебное исследование</h1>");
+                       "img{max-width:100%}</style><h1>Quant Price Live 6.1.0 — учебное исследование</h1>");
     html += "<p>" + r.source.toHtmlEscaped() + " • отчёт UTC " +
             QDateTime::currentDateTimeUtc().toString(Qt::ISODate) + "</p>";
     html += "<p>SHA-256 свечей: " + r.hash.toHtmlEscaped() +

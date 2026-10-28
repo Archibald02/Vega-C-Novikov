@@ -1,5 +1,7 @@
 #include "research_panel.hpp"
+#include "catalog_dialog.hpp"
 #include "quote_parser.hpp"
+#include "ui_helpers.hpp"
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QEventLoop>
@@ -8,8 +10,11 @@
 #include <QHeaderView>
 #include <QJsonDocument>
 #include <QScrollArea>
+#include <QShortcut>
+#include <QSignalBlocker>
 #include <QSplitter>
 #include <QStandardItemModel>
+#include <QTabBar>
 #include <QTimeZone>
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrentRun>
@@ -39,20 +44,20 @@ QSpinBox *integer(int value, int minimum, int maximum) {
     return w;
 }
 QStringList feature_names() {
-    return {QStringLiteral("Константа"),
-            "Close",
-            "SMA fast",
-            "SMA slow",
+    return {QStringLiteral("Число"),
+            QStringLiteral("Цена закрытия"),
+            QStringLiteral("Быстрая средняя SMA"),
+            QStringLiteral("Медленная средняя SMA"),
             "EMA",
             "RSI",
             "MACD",
-            "MACD signal",
-            "Bollinger upper",
-            "Bollinger lower",
+            QStringLiteral("Сигнал MACD"),
+            QStringLiteral("Bollinger верхняя"),
+            QStringLiteral("Bollinger нижняя"),
             "ATR 14",
             "NATR 14",
             "Z-score",
-            "Volume"};
+            QStringLiteral("Объём")};
 }
 QString stamp(std::int64_t time) {
     return QDateTime::fromMSecsSinceEpoch(time)
@@ -169,28 +174,85 @@ void journal_rows(QTableWidget *table, const quant::SimResult &result) {
 } // namespace
 ResearchPanel::ResearchPanel(QWidget *parent) : QWidget(parent) {
     auto *layout = new QVBoxLayout(this);
-    auto *top = new QHBoxLayout;
+    layout->setSizeConstraint(QLayout::SetNoConstraint);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(8);
+    auto *heading = new QHBoxLayout;
+    step_title_ = text(QStringLiteral("1. Загрузите данные"));
+    step_title_->setStyleSheet("font-size:21px;font-weight:600;");
+    heading->addWidget(step_title_, 1);
+    calculate_ = new QPushButton(QStringLiteral("Рассчитать"));
+    calculate_->setObjectName("connectButton");
+    calculate_->setShortcut(QKeySequence("Ctrl+Return"));
+    cancel_button_ = new QPushButton(QStringLiteral("Отменить загрузку / расчёт"));
+    auto *cancel = cancel_button_;
+    heading->addWidget(calculate_);
+    heading->addWidget(cancel);
+    layout->addLayout(heading);
+    dataset_context_ = text(QStringLiteral("Данные ещё не выбраны"));
+    dataset_context_->setStyleSheet("background:#132b3d;padding:9px;border-radius:5px;");
+    layout->addWidget(dataset_context_);
+    status_ = text(QStringLiteral("Начните с ДЕМО или загрузите закрытые свечи MOEX. Подключение потока "
+                                  "котировок для этого не требуется."));
+    layout->addWidget(status_);
+    auto *body = new QHBoxLayout;
+    journey_ = new QListWidget;
+    journey_->setObjectName("researchJourney");
+    journey_->setFixedWidth(182);
+    journey_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    const QStringList steps{QStringLiteral("1  Данные"),           QStringLiteral("2  Качество"),
+                            QStringLiteral("3  Анализ"),           QStringLiteral("4  Стратегия"),
+                            QStringLiteral("5  Результат"),        QStringLiteral("6  Устойчивость"),
+                            QStringLiteral("7  Виртуальный счёт"), QStringLiteral("Проект и отчёт"),
+                            QStringLiteral("Справка и термины")};
+    const int targets[]{6, 4, 0, 1, 2, 5, 3, 7, 8};
+    for (int i = 0; i < steps.size(); ++i) {
+        auto *item = new QListWidgetItem(steps[i], journey_);
+        item->setData(Qt::UserRole, targets[i]);
+    }
+    body->addWidget(journey_);
+    tabs_ = new QTabWidget;
+    tabs_->tabBar()->hide();
+    body->addWidget(tabs_, 1);
+    layout->addLayout(body, 1);
+    data_page_ = new QWidget;
+    data_layout_ = new QVBoxLayout(data_page_);
+    data_layout_->setSpacing(12);
+    data_layout_->addWidget(text(QStringLiteral(
+        "Здесь выбирается история для исследования. Она не зависит от таблицы текущих котировок.")));
     symbols_ = new QLineEdit("SBER, GAZP, LKOH");
     symbols_->setMaxLength(256);
-    symbols_->setToolTip(QStringLiteral("До 6 инструментов TQBR. Для корреляций нужны общие интервалы."));
+    symbols_->setPlaceholderText(QStringLiteral("Например: SBER, GAZP, LKOH"));
+    symbols_->setToolTip(
+        QStringLiteral("До 6 тикеров MOEX TQBR, через запятую. Для сравнения нужны совпадающие интервалы."));
     period_ = new QComboBox;
-    period_->addItems({QStringLiteral("День • 90 дней"), QStringLiteral("День • 365 дней"),
-                       QStringLiteral("Час • 7 дней")});
+    period_->addItems({QStringLiteral("Дневные свечи • 90 дней"), QStringLiteral("Дневные свечи • 1 год"),
+                       QStringLiteral("Часовые свечи • 7 дней")});
     period_->setCurrentIndex(1);
-    load_ = new QPushButton(QStringLiteral("Загрузить MOEX"));
-    auto *cancel = new QPushButton(QStringLiteral("Отменить"));
-    auto *demo_button = new QPushButton(QStringLiteral("ДЕМО лаборатории"));
-    top->addWidget(symbols_, 2);
-    top->addWidget(period_);
-    top->addWidget(load_);
-    top->addWidget(cancel);
-    top->addWidget(demo_button);
-    layout->addLayout(top);
-    status_ = text(QStringLiteral(
-        "Публичный MOEX ISS • без регистрации • до 6×5000 закрытых свечей • данные задержаны"));
-    layout->addWidget(status_);
-    auto *dates = new QHBoxLayout;
-    custom_dates_ = new QCheckBox(QStringLiteral("Свои даты"));
+    auto *data_form = new QFormLayout;
+    auto *ticker_row = new QHBoxLayout;
+    auto *catalog_button = new QPushButton(QStringLiteral("Выбрать из списка…"));
+    ticker_row->addWidget(symbols_, 1);
+    ticker_row->addWidget(catalog_button);
+    data_form->addRow(QStringLiteral("Акции для загрузки"), ticker_row);
+    connect(catalog_button, &QPushButton::clicked, this, [this] {
+        QStringList selected;
+        try {
+            selected = parse_symbols(symbols_->text());
+        } catch (...) {
+        }
+        CatalogDialog dialog(catalog_, selected, this, 6);
+        if (dialog.exec() == QDialog::Accepted) {
+            cancel_work();
+            symbols_->setText(dialog.selection().join(", "));
+            source_dirty_ = !data_.empty();
+            result_current_ = false;
+            update_journey();
+        }
+    });
+    data_form->addRow(QStringLiteral("Период и размер свечи"), period_);
+    data_layout_->addLayout(data_form);
+    custom_dates_ = new QCheckBox(QStringLiteral("Выбрать свои даты"));
     const auto today = QDateTime::currentDateTimeUtc().toTimeZone(QTimeZone("Europe/Moscow")).date();
     from_ = new QDateEdit(today.addYears(-3));
     till_ = new QDateEdit(today);
@@ -198,76 +260,127 @@ ResearchPanel::ResearchPanel(QWidget *parent) : QWidget(parent) {
         w->setCalendarPopup(true);
         w->setDisplayFormat("dd.MM.yyyy");
         w->setDateRange(QDate(1990, 1, 1), today);
+        w->setEnabled(false);
     }
-    dates->addWidget(custom_dates_);
-    dates->addWidget(from_);
-    dates->addWidget(till_);
-    dates->addStretch();
-    layout->addLayout(dates);
-    auto *controls = new QHBoxLayout;
+    auto *dates = new QFormLayout;
+    dates->addRow(custom_dates_);
+    dates->addRow(QStringLiteral("С даты"), from_);
+    dates->addRow(QStringLiteral("По дату включительно"), till_);
+    data_layout_->addLayout(dates);
+    dates->setRowVisible(from_, false);
+    dates->setRowVisible(till_, false);
+    connect(custom_dates_, &QCheckBox::toggled, this, [this, dates](bool on) {
+        from_->setEnabled(on);
+        till_->setEnabled(on);
+        dates->setRowVisible(from_, on);
+        dates->setRowVisible(till_, on);
+    });
+    auto *actions = new QHBoxLayout;
+    load_ = new QPushButton(QStringLiteral("Загрузить свечи MOEX"));
+    load_->setObjectName("connectButton");
+    auto *demo_button = new QPushButton(QStringLiteral("Попробовать ДЕМО без сети"));
+    actions->addWidget(load_);
+    actions->addWidget(demo_button);
+    actions->addStretch();
+    data_layout_->addLayout(actions);
+    data_layout_->addWidget(
+        text(QStringLiteral("MOEX — официальные данные с задержкой, без регистрации. ДЕМО — вымышленные "
+                            "цены. До 6 акций × 5000 свечей; незавершённые свечи исключаются.")));
     selected_ = new QComboBox;
+    selected_->setPlaceholderText(QStringLiteral("Сначала загрузите историю"));
+    selected_->setAccessibleName(QStringLiteral("Акция для анализа"));
+    auto *selected_row = new QFormLayout;
+    selected_row->addRow(QStringLiteral("Анализировать акцию"), selected_);
+    data_layout_->addLayout(selected_row);
     window_ = integer(20, 3, 200);
     lags_ = integer(20, 1, 50);
     adf_lags_ = integer(2, 0, 10);
     kpss_lags_ = integer(4, 0, 50);
-    calculate_ = new QPushButton(QStringLiteral("Рассчитать / проверить стратегию"));
-    controls->addWidget(selected_, 1);
-    controls->addWidget(text("Окно"));
-    controls->addWidget(window_);
-    controls->addWidget(text("ACF"));
-    controls->addWidget(lags_);
-    controls->addWidget(text("ADF lag"));
-    controls->addWidget(adf_lags_);
-    controls->addWidget(text("KPSS lag"));
-    controls->addWidget(kpss_lags_);
-    controls->addWidget(calculate_);
-    layout->addLayout(controls);
-    tabs_ = new QTabWidget;
-    tabs_->addTab(analytics_page(), QStringLiteral("Аналитика"));
-    tabs_->addTab(strategy_page(), QStringLiteral("Конструктор"));
-    tabs_->addTab(report_page(), QStringLiteral("Бэктест и walk-forward"));
+    expert_controls_ = new QWidget;
+    auto *expert_form = new QFormLayout(expert_controls_);
+    expert_form->addRow(QStringLiteral("Лагов ACF/PACF"), lags_);
+    expert_form->addRow(QStringLiteral("Лагов ADF"), adf_lags_);
+    expert_form->addRow(QStringLiteral("Полоса KPSS"), kpss_lags_);
+    tabs_->addTab(analytics_page(), QStringLiteral("Анализ"));
+    tabs_->addTab(strategy_page(), QStringLiteral("Стратегия"));
+    tabs_->addTab(report_page(), QStringLiteral("Результат"));
     tabs_->addTab(paper_page(), QStringLiteral("Виртуальный счёт"));
     auto *quality_page = new QWidget;
-    auto *qlayout = new QVBoxLayout(quality_page);
-    quality_ = text(QStringLiteral("История ещё не загружена."));
-    live_quality_ = text(QStringLiteral("Поток котировок не подключён."));
-    qlayout->addWidget(quality_);
-    qlayout->addWidget(live_quality_);
-    qlayout->addWidget(text(QStringLiteral(
-        "UTC внутри расчётов, Europe/Moscow в таблицах. Дневные ключи — дата торговой свечи; часовые — "
-        "точное начало интервала. Ничего не заполняется будущими значениями.\nРазрывы календаря могут быть "
-        "штатными неторговыми периодами: встроенного полного календаря биржевых исключений нет. Корреляции "
-        "используют пересечение одинаковых пар начала/конца доходности, а не растягивают одну доходность на "
-        "разные интервалы.\nНа текущей дате дневная свеча исключается целиком; часовая — до завершения часа. "
-        "Пропуски не превращаются в нулевые доходности. Цены не скорректированы на дивиденды/сплиты.")));
-    qlayout->addStretch();
-    tabs_->addTab(quality_page, QStringLiteral("Качество и время"));
+    quality_layout_ = new QVBoxLayout(quality_page);
+    quality_ = text(QStringLiteral("Сначала загрузите историю на шаге «Данные»."));
+    live_quality_ = text(QStringLiteral(
+        "Поток котировок — отдельный источник, подключать его для исследования не требуется."));
+    quality_layout_->addWidget(quality_);
+    auto *technical = new QWidget;
+    auto *technical_layout = new QVBoxLayout(technical);
+    technical_layout->addWidget(live_quality_);
+    technical_layout->addWidget(
+        text(QStringLiteral("Расчёты используют UTC, даты отображаются по Москве с историческим смещением. "
+                            "Отсутствующие цены не подставляются. Доходности сопоставляются по одинаковым "
+                            "интервалам. Цены без поправок на дивиденды/сплиты. Возраст дневной свечи может "
+                            "увеличиваться в выходные; это само по себе не ошибка.")));
+    quality_layout_->addWidget(ui::fold(QStringLiteral("Как проверяются время и интервалы"), technical));
+    tabs_->addTab(quality_page, QStringLiteral("Качество"));
+    tabs_->addTab(workbench_page(), QStringLiteral("Устойчивость"));
+    tabs_->addTab(data_page_, QStringLiteral("Данные"));
+    tabs_->addTab(project_page_, QStringLiteral("Проект и отчёт"));
+    tabs_->addTab(about_page_, QStringLiteral("Справка"));
     for (int i = 0; i < tabs_->count(); ++i) {
         auto *page = tabs_->widget(i);
         const auto title = tabs_->tabText(i);
         tabs_->removeTab(i);
         auto *scroll = new QScrollArea;
+        scroll->setFrameShape(QFrame::NoFrame);
         scroll->setWidgetResizable(true);
         scroll->setWidget(page);
         tabs_->insertTab(i, scroll, title);
     }
-    tabs_->addTab(workbench_page(), QStringLiteral("Исследования и выпуск"));
     setup_workbench();
-    tabs_->setCurrentIndex(0);
-    layout->addWidget(tabs_, 1);
+    heading->insertWidget(1, expert_);
+    data_layout_->addStretch();
+    auto *footer = new QHBoxLayout;
+    back_ = new QPushButton(QStringLiteral("← Назад"));
+    next_ = new QPushButton(QStringLiteral("Далее →"));
+    next_->setObjectName("connectButton");
+    step_hint_ = text(QString());
+    footer->addWidget(back_);
+    footer->addWidget(step_hint_, 1);
+    footer->addWidget(next_);
+    layout->addLayout(footer);
+    connect(journey_, &QListWidget::currentRowChanged, this, [this](int row) {
+        if (row >= 0)
+            tabs_->setCurrentIndex(journey_->item(row)->data(Qt::UserRole).toInt());
+    });
+    connect(tabs_, &QTabWidget::currentChanged, this, [this] { update_journey(); });
+    connect(next_, &QPushButton::clicked, this, &ResearchPanel::next_step);
+    connect(back_, &QPushButton::clicked, this, [this] {
+        const int row = journey_->currentRow();
+        if (row > 0)
+            journey_->setCurrentRow(row - 1);
+    });
+    tabs_->setCurrentIndex(6);
+    journey_->setCurrentRow(0);
     worker_ = new QFutureWatcher<LabResult>(this);
     connect(worker_, &QFutureWatcher<LabResult>::finished, this, [this] {
         calculate_->setEnabled(true);
+        update_journey();
         if (cancel_ && cancel_->load())
             return;
         const auto result = worker_->result();
         if (!result.error.isEmpty()) {
+            show_result_when_ready_ = false;
             status_->setText(result.error);
             return;
         }
         last_result_ = result;
         present(result);
         record_run(result);
+        result_current_ = true;
+        if (show_result_when_ready_) {
+            show_result_when_ready_ = false;
+            tabs_->setCurrentIndex(2);
+        }
+        update_journey();
         status_->setText(synthetic_
                              ? QStringLiteral("ДЕМО • расчёт завершён, все цены синтетические")
                              : QStringLiteral("MOEX ISS • расчёт закрытых задержанных свечей завершён"));
@@ -275,6 +388,7 @@ ResearchPanel::ResearchPanel(QWidget *parent) : QWidget(parent) {
     connect(load_, &QPushButton::clicked, this, [this] {
         cancel_work();
         data_.clear();
+        result_current_ = false;
         diagnostics_.clear();
         selected_->clear();
         try {
@@ -291,6 +405,7 @@ ResearchPanel::ResearchPanel(QWidget *parent) : QWidget(parent) {
         load_->setEnabled(false);
         period_->setEnabled(false);
         request_index_ = 0;
+        update_journey();
         load_next();
     });
     connect(cancel, &QPushButton::clicked, this, [this] {
@@ -304,8 +419,11 @@ ResearchPanel::ResearchPanel(QWidget *parent) : QWidget(parent) {
     });
     connect(calculate_, &QPushButton::clicked, this, &ResearchPanel::calculate);
     connect(selected_, &QComboBox::currentTextChanged, this, [this] {
-        if (!loading_)
+        if (!loading_) {
             cancel_work();
+            result_current_ = false;
+            update_journey();
+        }
     });
     connect(&loader_, &MarketHistory::loaded, this,
             [this](const QString &symbol, int preset, const QVector<Candle> &bars, bool) {
@@ -354,6 +472,9 @@ ResearchPanel::ResearchPanel(QWidget *parent) : QWidget(parent) {
         load_next();
     });
     auto dirty = [this] {
+        result_current_ = false;
+        show_result_when_ready_ = false;
+        update_journey();
         if (cancel_)
             cancel_->store(true);
         if (!data_.empty())
@@ -365,10 +486,21 @@ ResearchPanel::ResearchPanel(QWidget *parent) : QWidget(parent) {
     for (auto *w : findChildren<QDoubleSpinBox *>())
         connect(w, &QDoubleSpinBox::valueChanged, this, dirty);
     for (auto *w : findChildren<QCheckBox *>())
-        connect(w, &QCheckBox::toggled, this, dirty);
+        if (w != expert_ && w != save_cash_ && w != save_account_)
+            connect(w, &QCheckBox::toggled, this, dirty);
     for (auto *w : findChildren<QComboBox *>())
         if (w != selected_ && w != period_ && w != distribution_mode_)
             connect(w, &QComboBox::currentIndexChanged, this, dirty);
+    auto source_changed = [this, dirty] {
+        source_dirty_ = !data_.empty();
+        dirty();
+        status_->setText(QStringLiteral("Параметры загрузки изменены. Нажмите «Загрузить свечи MOEX», чтобы "
+                                        "использовать новый диапазон."));
+    };
+    connect(from_, &QDateEdit::dateChanged, this, [source_changed] { source_changed(); });
+    connect(till_, &QDateEdit::dateChanged, this, [source_changed] { source_changed(); });
+    connect(symbols_, &QLineEdit::textEdited, this, [source_changed] { source_changed(); });
+    connect(custom_dates_, &QCheckBox::toggled, this, [source_changed] { source_changed(); });
     connect(period_, &QComboBox::currentIndexChanged, this, [this] {
         if (!loading_) {
             cancel_work();
@@ -389,6 +521,10 @@ ResearchPanel::ResearchPanel(QWidget *parent) : QWidget(parent) {
         });
     paper_timer_.setInterval(500);
     connect(&paper_timer_, &QTimer::timeout, this, &ResearchPanel::step_paper);
+    ui::prepare_controls(this);
+    expert_->setChecked(false);
+    analytics_expert_->setVisible(false);
+    update_journey();
 }
 ResearchPanel::~ResearchPanel() { cancel_work(); }
 void ResearchPanel::set_symbol(const QString &symbol) {
@@ -412,6 +548,11 @@ void ResearchPanel::cancel_work() {
     load_->setEnabled(true);
     period_->setEnabled(true);
     paper_timer_.stop();
+    if (paper_play_) {
+        paper_play_->setChecked(false);
+        paper_play_->setText(QStringLiteral("Запустить автоматически"));
+    }
+    show_result_when_ready_ = false;
     live_timer_.stop();
     live_loader_.cancel();
     live_paper_ = false;
@@ -419,6 +560,7 @@ void ResearchPanel::cancel_work() {
     ++study_generation_;
     if (dividend_reply_)
         dividend_reply_->abort();
+    update_journey();
 }
 void ResearchPanel::clear_private_state() {
     cancel_work();
@@ -438,6 +580,8 @@ void ResearchPanel::clear_private_state() {
     paper_bars_.clear();
     selected_->clear();
     last_result_ = LabResult{};
+    result_current_ = false;
+    source_dirty_ = false;
     cash_->setValue(100000);
     allocation_->setValue(20);
     stop_->setValue(2);
@@ -475,6 +619,7 @@ void ResearchPanel::clear_private_state() {
     for (auto *c :
          {distribution_chart_, acf_chart_, price_chart_, equity_chart_, drawdown_chart_, paper_chart_})
         c->clear();
+    update_journey();
 }
 void ResearchPanel::load_next() {
     if (request_index_ < requested_.size()) {
@@ -490,46 +635,64 @@ void ResearchPanel::load_next() {
         return;
     }
     loading_ = false;
+    source_dirty_ = false;
     load_->setEnabled(true);
     period_->setEnabled(true);
     for (const auto &kv : data_)
         if (kv.second.size() >= 3)
             selected_->addItem(kv.first);
+    if (selected_->count() > 0)
+        selected_->setCurrentIndex(0);
     quality_->setText(diagnostics_.join('\n'));
     catalog_.load();
     preflight();
+    update_journey();
     status_->setText(QStringLiteral(
         "История загружена. Выберите инструмент и нажмите расчёт. Незавершённые свечи исключены."));
 }
 QWidget *ResearchPanel::analytics_page() {
     auto *page = new QWidget;
     auto *layout = new QVBoxLayout(page);
-    statistics_ = text(QStringLiteral("Загрузите историю или ДЕМО лаборатории."));
-    tests_ = text("");
-    feature_text_ = text("");
-    layout->addWidget(statistics_);
-    distribution_mode_ = new QComboBox;
-    distribution_mode_->addItems({QStringLiteral("Гистограмма простых доходностей, %"),
-                                  QStringLiteral("Простые доходности, %"),
-                                  QStringLiteral("Логарифмические доходности, %")});
-    layout->addWidget(distribution_mode_);
-    auto *charts = new QHBoxLayout;
-    distribution_chart_ = new VisualChart;
-    acf_chart_ = new VisualChart;
-    charts->addWidget(distribution_chart_, 1);
-    charts->addWidget(acf_chart_, 1);
-    layout->addLayout(charts);
-    layout->addWidget(feature_text_);
-    layout->addWidget(tests_);
-    price_chart_ = new VisualChart;
-    layout->addWidget(price_chart_);
-    features_table_ = table({QStringLiteral("Свеча МСК"), "Close", "SMA fast", "SMA slow", "EMA", "RSI",
-                             "MACD", "Signal", "BB upper", "BB lower", "ATR", "NATR %", "Z-score"});
-    layout->addWidget(features_table_);
-    correlations_ = table({});
     layout->addWidget(
-        text(QStringLiteral("Корреляции логдоходностей: только одинаковые интервалы для всех серий")));
-    layout->addWidget(correlations_);
+        text(QStringLiteral("Посмотрите форму движения цены и сравните её со средними. Все значения ниже "
+                            "рассчитаны по закрытым свечам, а не по отдельным обновлениям котировок.")));
+    auto *window_form = new QFormLayout;
+    window_form->addRow(QStringLiteral("Окно EMA и Z-score, свечей"), window_);
+    layout->addLayout(window_form);
+    price_chart_ = new VisualChart;
+    price_chart_->clear(QStringLiteral("Загрузите данные и нажмите «Рассчитать»"));
+    layout->addWidget(price_chart_);
+    feature_text_ = text(QStringLiteral("Индикаторы появятся после расчёта."));
+    layout->addWidget(feature_text_);
+    auto *distribution = new QWidget;
+    auto *dl = new QVBoxLayout(distribution);
+    statistics_ = text(QStringLiteral("Статистика появится после расчёта."));
+    dl->addWidget(statistics_);
+    distribution_mode_ = new QComboBox;
+    distribution_mode_->addItems({QStringLiteral("Распределение доходностей"),
+                                  QStringLiteral("Простые доходности по порядку"),
+                                  QStringLiteral("Логарифмические доходности по порядку")});
+    dl->addWidget(distribution_mode_);
+    distribution_chart_ = new VisualChart;
+    dl->addWidget(distribution_chart_);
+    layout->addWidget(ui::fold(QStringLiteral("Доходности и распределение"), distribution, true));
+    analytics_expert_ = new QWidget;
+    auto *expert_layout = new QVBoxLayout(analytics_expert_);
+    expert_layout->addWidget(expert_controls_);
+    tests_ = text(QStringLiteral("ADF/KPSS: сначала выполните расчёт."));
+    expert_layout->addWidget(tests_);
+    acf_chart_ = new VisualChart;
+    expert_layout->addWidget(acf_chart_);
+    features_table_ =
+        table({QStringLiteral("Свеча МСК"), QStringLiteral("Закрытие"), QStringLiteral("Быстрая SMA"),
+               QStringLiteral("Медленная SMA"), "EMA", "RSI", "MACD", QStringLiteral("Сигнал"),
+               QStringLiteral("BB верх"), QStringLiteral("BB низ"), "ATR", "NATR %", "Z-score"});
+    expert_layout->addWidget(features_table_);
+    correlations_ = table({});
+    expert_layout->addWidget(
+        text(QStringLiteral("Корреляции: насколько похожи доходности акций на совпадающих интервалах")));
+    expert_layout->addWidget(correlations_);
+    layout->addWidget(analytics_expert_);
     connect(distribution_mode_, &QComboBox::currentIndexChanged, this, [this] { show_distribution(); });
     return page;
 }
@@ -538,12 +701,14 @@ QWidget *ResearchPanel::rules_box(const QString &title, std::vector<RuleUi> &con
     auto *page = new QWidget;
     auto *layout = new QVBoxLayout(page);
     layout->addWidget(text(title));
-    all = new QCheckBox(QStringLiteral("Все включённые условия (иначе: хотя бы одно)"));
+    all = new QCheckBox(
+        QStringLiteral("Должны выполняться ВСЕ отмеченные условия (снимите флажок для «хотя бы одного»)"));
     all->setChecked(true);
     layout->addWidget(all);
     for (int i = 0; i < 2; ++i) {
         RuleUi r;
-        r.enabled = new QCheckBox;
+        r.enabled = new QCheckBox(QString::number(i + 1));
+        r.enabled->setAccessibleName(title + QStringLiteral(" • условие ") + QString::number(i + 1));
         r.enabled->setChecked(i == 0);
         r.lhs = new QComboBox;
         r.lhs->addItems(feature_names());
@@ -551,15 +716,25 @@ QWidget *ResearchPanel::rules_box(const QString &title, std::vector<RuleUi> &con
             model->item(0)->setEnabled(false);
         r.lhs->setCurrentIndex(i == 0 ? 2 : 5);
         r.op = new QComboBox;
-        r.op->addItems({">", "<", QStringLiteral("Пересёк ↑"), QStringLiteral("Пересёк ↓")});
+        r.op->addItems({QStringLiteral("больше"), QStringLiteral("меньше"),
+                        QStringLiteral("пересекает вверх"), QStringLiteral("пересекает вниз")});
         r.op->setCurrentIndex(i == 0 ? (entry ? 2 : 3) : (entry ? 1 : 0));
         r.rhs = new QComboBox;
         r.rhs->addItems(feature_names());
         r.rhs->setCurrentIndex(i == 0 ? 3 : 0);
         r.value = number(entry ? 70 : 75, -1e9, 1e9, 4);
         r.value->setEnabled(i != 0);
-        connect(r.rhs, &QComboBox::currentIndexChanged, r.value,
-                [v = r.value](int index) { v->setEnabled(index == 0); });
+        auto sync = [r] {
+            const bool on = r.enabled->isChecked();
+            r.lhs->setEnabled(on);
+            r.op->setEnabled(on);
+            r.rhs->setEnabled(on);
+            r.value->setVisible(r.rhs->currentIndex() == 0);
+            r.value->setEnabled(on && r.rhs->currentIndex() == 0);
+        };
+        connect(r.rhs, &QComboBox::currentIndexChanged, r.value, [sync](int) { sync(); });
+        connect(r.enabled, &QCheckBox::toggled, r.value, [sync](bool) { sync(); });
+        sync();
         auto *row = new QHBoxLayout;
         row->addWidget(r.enabled);
         row->addWidget(r.lhs);
@@ -575,22 +750,50 @@ QWidget *ResearchPanel::strategy_page() {
     auto *page = new QWidget;
     auto *layout = new QVBoxLayout(page);
     layout->addWidget(text(QStringLiteral(
-        "Только виртуальные покупки без плеча. Правило проверяется по закрытой свече; рыночное исполнение — "
-        "на следующем открытии. При прогреве индикатора условие ложно.")));
-    auto *periods = new QHBoxLayout;
+        "Когда условие входа выполнено на закрытии свечи, тренажёр покупает на следующем открытии. Условие "
+        "выхода работает так же. Продажи без покрытия и реальные заявки отсутствуют.")));
+    auto *presets = new QHBoxLayout;
+    presets->addWidget(text(QStringLiteral("Готовое правило:")));
+    for (int preset = 0; preset < 3; ++preset) {
+        const QStringList names{QStringLiteral("Пересечение средних"),
+                                QStringLiteral("RSI: ниже 30 / выше 70"), QStringLiteral("Цена и EMA")};
+        auto *button = new QPushButton(names[preset]);
+        presets->addWidget(button);
+        connect(button, &QPushButton::clicked, this, [this, preset] {
+            for (auto *group : {&entry_rules_, &exit_rules_})
+                for (std::size_t i = 0; i < group->size(); ++i)
+                    (*group)[i].enabled->setChecked(i == 0);
+            auto set = [](RuleUi &r, int lhs, int op, int rhs, double value) {
+                r.lhs->setCurrentIndex(lhs);
+                r.op->setCurrentIndex(op);
+                r.rhs->setCurrentIndex(rhs);
+                r.value->setValue(value);
+            };
+            if (preset == 0) {
+                fast_->setValue(10);
+                slow_->setValue(30);
+                set(entry_rules_[0], 2, 2, 3, 0);
+                set(exit_rules_[0], 2, 3, 3, 0);
+            } else if (preset == 1) {
+                set(entry_rules_[0], 5, 1, 0, 30);
+                set(exit_rules_[0], 5, 0, 0, 70);
+            } else {
+                set(entry_rules_[0], 1, 2, 4, 0);
+                set(exit_rules_[0], 1, 3, 4, 0);
+            }
+            entry_all_->setChecked(true);
+            exit_all_->setChecked(true);
+        });
+    }
+    layout->addLayout(presets);
     fast_ = integer(10, 2, 100);
     slow_ = integer(30, 3, 200);
-    periods->addWidget(text("SMA fast"));
-    periods->addWidget(fast_);
-    periods->addWidget(text("SMA slow"));
-    periods->addWidget(slow_);
-    periods->addStretch();
+    auto *periods = new QFormLayout;
+    periods->addRow(QStringLiteral("Быстрая средняя, свечей"), fast_);
+    periods->addRow(QStringLiteral("Медленная средняя, свечей"), slow_);
     layout->addLayout(periods);
-    layout->addWidget(rules_box(QStringLiteral("ВХОД"), entry_rules_, entry_all_, true));
-    layout->addWidget(rules_box(QStringLiteral("ВЫХОД"), exit_rules_, exit_all_, false));
-    auto *forms = new QHBoxLayout;
-    auto *left = new QFormLayout;
-    auto *right = new QFormLayout;
+    layout->addWidget(rules_box(QStringLiteral("Когда покупать"), entry_rules_, entry_all_, true));
+    layout->addWidget(rules_box(QStringLiteral("Когда продавать"), exit_rules_, exit_all_, false));
     cash_ = number(100000, 100, 1e12, 2);
     lot_ = integer(1, 1, 1000000);
     commission_ = number(.05, 0, 10, 4);
@@ -599,75 +802,112 @@ QWidget *ResearchPanel::strategy_page() {
     slippage_ = number(2, 0, 500);
     allocation_ = number(20, .1, 100);
     participation_ = number(0, 0, 100);
-    left->addRow(QStringLiteral("Виртуальный капитал, ₽"), cash_);
-    left->addRow(QStringLiteral("Лот (проверьте у источника)"), lot_);
-    left->addRow(QStringLiteral("Комиссия за сторону, %"), commission_);
-    left->addRow(QStringLiteral("Фикс. комиссия за исполнение, ₽"), fixed_);
-    left->addRow(QStringLiteral("Полный спред, б.п."), spread_);
-    left->addRow(QStringLiteral("Проскальзывание за сторону, б.п."), slippage_);
-    left->addRow(QStringLiteral("Макс. доля капитала, %"), allocation_);
-    left->addRow(QStringLiteral("Лимит от объёма ПРЕДЫДУЩЕЙ свечи, % (0=нет)"), participation_);
     stop_ = number(2, 0, 99);
     target_ = number(4, 0, 1000);
     risk_ = number(1, .01, 100);
     max_dd_ = number(20, .01, 100);
     daily_ = number(5, .01, 100);
     max_entries_ = integer(10, 1, 1000);
+    annual_ = integer(0, 0, 100000);
     ambiguity_ = new QComboBox;
     ambiguity_->addItems(
-        {QStringLiteral("Консервативно: сначала стоп"), QStringLiteral("Оптимистично: сначала цель")});
-    annual_ = integer(0, 0, 100000);
-    right->addRow(QStringLiteral("Стоп, % (0=нет)"), stop_);
-    right->addRow(QStringLiteral("Цель, % (0=нет)"), target_);
-    right->addRow(QStringLiteral("Модель риска входа, % капитала"), risk_);
-    right->addRow(QStringLiteral("Аварийная просадка, %"), max_dd_);
-    right->addRow(QStringLiteral("Лимит потери сессии, %"), daily_);
-    right->addRow(QStringLiteral("Макс. входов в сессию"), max_entries_);
-    right->addRow(QStringLiteral("Стоп и цель внутри одной свечи"), ambiguity_);
-    right->addRow(QStringLiteral("Годовой масштаб Sharpe N (0=на свечу)"), annual_);
-    forms->addLayout(left, 1);
-    forms->addLayout(right, 1);
-    layout->addLayout(forms);
-    layout->addWidget(text(QStringLiteral(
-        "Сессия риска — календарная дата Europe/Moscow, гэп включён относительно предыдущего капитала. "
-        "Лимиты проверяются на закрытии, выход откладывается до следующего доступного открытия: они не "
-        "гарантируют максимальный убыток. Стоп/цель — рыночные триггеры в модели. Лимит объёма использует "
-        "только прошлую свечу и не воспроизводит очередь биржи. Нулевая ставка сравнения доходности. N "
-        "задаётся явно; по умолчанию Sharpe/Sortino на свечу, без годового пересчёта.")));
+        {QStringLiteral("Осторожно: сначала стоп"), QStringLiteral("Оптимистично: сначала цель")});
+    auto *budget = new QWidget;
+    auto *form = new QFormLayout(budget);
+    form->addRow(QStringLiteral("Виртуальные деньги, ₽"), cash_);
+    form->addRow(QStringLiteral("Риск одной сделки, % капитала"), risk_);
+    form->addRow(QStringLiteral("Максимум денег в позиции, %"), allocation_);
+    form->addRow(QStringLiteral("Стоп: допустимое движение вниз, %"), stop_);
+    form->addRow(QStringLiteral("Цель: движение вверх для выхода, %"), target_);
+    layout->addWidget(ui::fold(QStringLiteral("Деньги и риск сделки"), budget, true));
+    auto *execution = new QWidget;
+    auto *ef = new QFormLayout(execution);
+    ef->addRow(QStringLiteral("Комиссия при покупке и продаже, %"), commission_);
+    ef->addRow(QStringLiteral("Фиксированная комиссия за исполнение, ₽"), fixed_);
+    ef->addRow(QStringLiteral("Спред, базисных пунктов"), spread_);
+    ef->addRow(QStringLiteral("Проскальзывание за сторону, б.п."), slippage_);
+    ef->addRow(QStringLiteral("Если стоп и цель достигнуты в одной свече"), ambiguity_);
+    ef->addRow(text(QStringLiteral(
+        "1 б.п. = 0,01%. Спред и проскальзывание ухудшают цену исполнения. Комиссии вычитаются из "
+        "виртуального счёта. Нулевой стоп или цель выключают соответствующий триггер.")));
+    layout->addWidget(ui::fold(QStringLiteral("Как учитываются комиссии и исполнение"), execution));
+    auto *limits = new QWidget;
+    auto *lf = new QFormLayout(limits);
+    lf->addRow(QStringLiteral("Остановить входы при просадке, %"), max_dd_);
+    lf->addRow(QStringLiteral("Лимит потери за сессию, %"), daily_);
+    lf->addRow(QStringLiteral("Максимум входов за сессию"), max_entries_);
+    lf->addRow(QStringLiteral("Доля предыдущего объёма, % (0 = без ограничения)"), participation_);
+    lf->addRow(QStringLiteral("Годовой масштаб Sharpe N (0 = на свечу)"), annual_);
+    lf->addRow(
+        text(QStringLiteral("Лимиты проверяются на закрытиях. Гэп может увеличить убыток: лимит и стоп не "
+                            "гарантируют цену выхода. Годовой масштаб по умолчанию выключен.")));
+    layout->addWidget(ui::fold(QStringLiteral("Аварийные лимиты и дополнительные допущения"), limits));
+    risk_->setToolTip(QStringLiteral("Размер позиции ограничивается этим бюджетом с учётом ожидаемых "
+                                     "издержек стопа. Убыток при гэпе может быть больше."));
     return page;
 }
 QWidget *ResearchPanel::report_page() {
     auto *page = new QWidget;
     auto *layout = new QVBoxLayout(page);
-    auto *row = new QHBoxLayout;
+    result_banner_ = text(QStringLiteral(
+        "Сначала рассчитайте стратегию. Здесь появится результат по выбранным закрытым свечам."));
+    layout->addWidget(result_banner_);
+    auto *summary = new QHBoxLayout;
+    auto card = [summary](const QString &title) {
+        auto *box = new QFrame;
+        box->setStyleSheet("QFrame{background:#132b3d;border-radius:6px;}");
+        auto *l = new QVBoxLayout(box);
+        l->addWidget(text(title));
+        auto *value = text(QStringLiteral("—"));
+        value->setStyleSheet("font-size:23px;font-weight:600;");
+        l->addWidget(value);
+        summary->addWidget(box, 1);
+        return value;
+    };
+    return_card_ = card(QStringLiteral("Доходность, %"));
+    drawdown_card_ = card(QStringLiteral("Просадка, %"));
+    fills_card_ = card(QStringLiteral("Исполнений"));
+    cost_card_ = card(QStringLiteral("Издержки, ₽"));
+    layout->addLayout(summary);
+    auto *walk_parameters = new QWidget;
+    auto *row = new QHBoxLayout(walk_parameters);
     train_ = integer(120, 60, 300);
     test_ = integer(40, 10, 100);
-    row->addWidget(text(QStringLiteral("Walk-forward: обучение, свечей")));
+    row->addWidget(text(QStringLiteral("Обучение, свечей")));
     row->addWidget(train_);
     row->addWidget(text(QStringLiteral("Проверка, свечей")));
     row->addWidget(test_);
     row->addStretch();
-    layout->addLayout(row);
+    layout->addWidget(
+        ui::fold(QStringLiteral("Настроить последовательную проверку (walk-forward)"), walk_parameters));
     report_ = text(QStringLiteral("Нажмите общий расчёт после настройки правил."));
-    layout->addWidget(report_);
+    layout->addWidget(ui::fold(QStringLiteral("Все показатели и методика расчёта"), report_));
     equity_chart_ = new VisualChart;
     drawdown_chart_ = new VisualChart;
     layout->addWidget(equity_chart_);
-    layout->addWidget(drawdown_chart_);
+    layout->addWidget(ui::fold(QStringLiteral("График просадки"), drawdown_chart_));
     folds_ = table({QStringLiteral("Обучение"), QStringLiteral("Тест"), "Fast / slow",
                     QStringLiteral("Обучение, %"), QStringLiteral("Вне выборки, %")});
-    layout->addWidget(folds_);
+    layout->addWidget(ui::fold(QStringLiteral("Результаты на следующих отрезках истории"), folds_));
     backtest_journal_ = table({QStringLiteral("Свеча МСК"), QStringLiteral("Акций ±"), QStringLiteral("Цена"),
                                QStringLiteral("Деньги"), QStringLiteral("Журнал бэктеста: причина")});
-    layout->addWidget(backtest_journal_);
-    layout->addWidget(text(QStringLiteral(
-        "Сетка walk-forward: fast {5,10,20}, slow {20,40,60}, fast<slow; выбирается чистая доходность "
-        "обучения после издержек. Другие правила фиксированы. Каждый тест начинается без позиции и "
-        "заканчивается ликвидацией; капитал переносится между тестами. Остаток истории короче окна теста не "
-        "используется. Это не независимый финальный holdout при многократном ручном подборе.\nБаза «держать» "
-        "использует ту же долю капитала, комиссии и спред; покупка на первом открытии, без стопов и лимитов "
-        "стратегии. Денежная база без процентов. CAGR/Calmar показываются только при горизонте не менее 30 "
-        "календарных дней; короткая годовая экстраполяция ненадёжна.")));
+    layout->addWidget(
+        ui::fold(QStringLiteral("Сделки и причины решений (нажмите строку для перехода к графику)"),
+                 backtest_journal_));
+    layout->addWidget(ui::fold(
+        QStringLiteral("Что означает сравнение с базами"),
+        text(QStringLiteral(
+            "Сетка walk-forward: fast {5,10,20}, slow {20,40,60}, fast<slow; выбирается чистая доходность "
+            "обучения после издержек. Другие правила фиксированы. Каждый тест начинается без позиции и "
+            "заканчивается ликвидацией; капитал переносится между тестами. Остаток истории короче окна теста "
+            "не "
+            "используется. Это не независимый финальный holdout при многократном ручном подборе.\nБаза "
+            "«держать» "
+            "использует ту же долю капитала, комиссии и спред; покупка на первом открытии, без стопов и "
+            "лимитов "
+            "стратегии. Денежная база без процентов. CAGR/Calmar показываются только при горизонте не менее "
+            "30 "
+            "календарных дней; короткая годовая экстраполяция ненадёжна."))));
     return page;
 }
 QWidget *ResearchPanel::paper_page() {
@@ -677,11 +917,16 @@ QWidget *ResearchPanel::paper_page() {
         text(QStringLiteral("ВИРТУАЛЬНЫЙ СЧЁТ • проигрывание загруженных закрытых свечей • реальных денег и "
                             "торговых API нет. Параметры фиксируются при открытии счёта.")));
     auto *controls = new QHBoxLayout;
-    auto *start = new QPushButton(QStringLiteral("Новый счёт"));
+    auto *start = new QPushButton(QStringLiteral("Начать проигрывание истории"));
     auto *step = new QPushButton(QStringLiteral("Следующая свеча"));
-    auto *play = new QPushButton(QStringLiteral("Авто / пауза"));
+    auto *play = new QPushButton(QStringLiteral("Запустить автоматически"));
+    paper_play_ = play;
+    paper_step_ = step;
+    play->setCheckable(true);
     auto *kill = new QPushButton(QStringLiteral("АВАРИЙНЫЙ СТОП"));
     kill->setStyleSheet("background:#703645;");
+    kill->setToolTip(QStringLiteral(
+        "Запрет новых входов. Открытая позиция закрывается на следующей доступной свече по модели."));
     for (auto *b : {start, step, play, kill})
         controls->addWidget(b);
     controls->addStretch();
@@ -695,11 +940,19 @@ QWidget *ResearchPanel::paper_page() {
     layout->addWidget(journal_);
     connect(start, &QPushButton::clicked, this, &ResearchPanel::start_paper);
     connect(step, &QPushButton::clicked, this, &ResearchPanel::step_paper);
-    connect(play, &QPushButton::clicked, this, [this] {
+    connect(play, &QPushButton::clicked, this, [this, play] {
         if (paper_timer_.isActive())
             paper_timer_.stop();
         else if (paper_)
             paper_timer_.start();
+        play->setChecked(paper_timer_.isActive());
+        play->setText(paper_timer_.isActive() ? QStringLiteral("Приостановить")
+                                              : QStringLiteral("Запустить автоматически"));
+    });
+    connect(&paper_timer_, &QTimer::timeout, play, [this, play] {
+        play->setChecked(paper_timer_.isActive());
+        if (!paper_timer_.isActive())
+            play->setText(QStringLiteral("Запустить автоматически"));
     });
     connect(kill, &QPushButton::clicked, this,
             [this] { stop_paper(QStringLiteral("Остановка пользователем")); });
@@ -757,6 +1010,10 @@ std::vector<quant::Bar> ResearchPanel::selected_bars() const {
 void ResearchPanel::calculate() {
     if (loading_ || worker_->isRunning())
         return;
+    if (source_dirty_) {
+        status_->setText(QStringLiteral("Параметры загрузки изменены. Сначала загрузите новый диапазон."));
+        return;
+    }
     auto bars = selected_bars();
     preflight();
     if (bars.size() < 40) {
@@ -817,7 +1074,7 @@ void ResearchPanel::calculate() {
             series.push_back(std::move(sample));
         }
     calculate_->setEnabled(false);
-    status_->setText(QStringLiteral("Расчёт в фоновом потоке…"));
+    status_->setText(QStringLiteral("Считаем в фоне. Окно остаётся доступным; можно отменить расчёт."));
     worker_->setFuture(
         QtConcurrent::run([bars, complete_bars, series, config, window, lags, adf, kpss, train, test,
                            cancelled, parameters, hash, source, holdout, split, embargo] {
@@ -863,6 +1120,7 @@ void ResearchPanel::calculate() {
             }
             return r;
         }));
+    update_journey();
 }
 void ResearchPanel::show_distribution() {
     const auto &d = last_result_.distribution;
@@ -975,6 +1233,10 @@ void ResearchPanel::present(const LabResult &r) {
             correlations_->setItem(i, j, item);
         }
     const auto &m = r.simulation.metrics;
+    return_card_->setText(fmt(m.total_return * 100, 2));
+    drawdown_card_->setText(fmt(m.max_drawdown * 100, 2));
+    fills_card_->setText(QString::number(m.fills));
+    cost_card_->setText(fmt(m.fees + m.execution_cost, 2));
     report_->setText(
         QStringLiteral(
             "Чистый результат: %1% • максимум просадки по закрытиям: %2% • оборот / начальный капитал: "
@@ -1027,12 +1289,14 @@ void ResearchPanel::present(const LabResult &r) {
                 markers.push_back({static_cast<double>(it - bars.begin()), e.price});
         }
     price_chart_->set_markers(markers);
+    update_journey();
 }
 void ResearchPanel::demo() {
     data_.clear();
     selected_->clear();
     diagnostics_.clear();
     synthetic_ = true;
+    source_dirty_ = false;
     local_project_ = false;
     period_->setCurrentIndex(1);
     const QStringList names{"SBER", "GAZP", "LKOH"};
@@ -1055,9 +1319,14 @@ void ResearchPanel::demo() {
         }
         selected_->addItem(names[k]);
     }
+    selected_->setCurrentIndex(0);
     quality_->setText(QStringLiteral("ДЕМО: 3×360 синтетических закрытых дневных свечей, условный календарь "
                                      "Пн–Пт. Это не биржевые данные."));
-    status_->setText(QStringLiteral("ДЕМО готово. Настройте правила и нажмите расчёт."));
+    result_current_ = false;
+    update_metadata();
+    update_journey();
+    status_->setText(
+        QStringLiteral("ДЕМО загружено. Нажмите «Проверить данные», затем следуйте шагам слева."));
 }
 void ResearchPanel::start_paper() {
     paper_timer_.stop();
@@ -1094,9 +1363,9 @@ void ResearchPanel::step_paper() {
     }
     try {
         paper_->step(paper_bars_[paper_index_++]);
-        update_paper();
         if (paper_index_ == paper_bars_.size())
             paper_timer_.stop();
+        update_paper();
     } catch (const std::exception &) {
         stop_paper(QStringLiteral("Ошибка данных или лимит сессии"));
     }
@@ -1116,6 +1385,11 @@ void ResearchPanel::stop_paper(const QString &why) {
     }
 }
 void ResearchPanel::update_paper() {
+    paper_play_->setChecked(paper_timer_.isActive());
+    paper_play_->setText(paper_timer_.isActive() ? QStringLiteral("Приостановить")
+                                                 : QStringLiteral("Запустить автоматически"));
+    paper_play_->setEnabled(paper_ && !live_paper_);
+    paper_step_->setEnabled(paper_ && !live_paper_);
     if (!paper_)
         return;
     const auto r = paper_->result();
@@ -1143,7 +1417,7 @@ void ResearchPanel::update_paper() {
         QStringLiteral("Та же модель исполнения, что в бэктесте. Никаких запросов к торговому API."));
     journal_rows(journal_, r);
 }
-void ResearchPanel::set_test_view(int index) { tabs_->setCurrentIndex(std::clamp(index, 0, 5)); }
+void ResearchPanel::set_test_view(int index) { tabs_->setCurrentIndex(std::clamp(index, 0, 8)); }
 void ResearchPanel::start_online_test() {
     symbols_->setText("SBER, GAZP");
     period_->setCurrentIndex(1);
@@ -1169,6 +1443,8 @@ bool ResearchPanel::privacy_test() {
 }
 bool ResearchPanel::self_test() {
     cancel_work();
+    if (!journey_test())
+        return false;
     demo();
     const auto bars = selected_bars();
     if (bars.size() != 360)
@@ -1195,10 +1471,16 @@ bool ResearchPanel::self_test() {
     {
         QEventLoop loop;
         connect(worker_, &QFutureWatcher<LabResult>::finished, &loop, &QEventLoop::quit);
-        calculate();
+        tabs_->setCurrentIndex(1);
+        next_->click();
         QTimer::singleShot(10000, &loop, &QEventLoop::quit);
         loop.exec();
-        if (worker_->isRunning() || !worker_->result().error.isEmpty())
+        if (worker_->isRunning() || !worker_->result().error.isEmpty() || tabs_->currentIndex() != 2 ||
+            !result_current_)
+            return false;
+        expert_->setChecked(true);
+        expert_->setChecked(false);
+        if (!result_current_)
             return false;
     }
     {

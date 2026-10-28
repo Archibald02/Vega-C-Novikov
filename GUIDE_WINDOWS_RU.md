@@ -1,6 +1,6 @@
 # Полный гайд: Quant Price Live 5, Windows и GitHub
 
-**Версия 6:** полный маршрут работы и все 15 улучшений — [WORKBENCH_GUIDE_RU.md](WORKBENCH_GUIDE_RU.md), офлайн `WORKBENCH_GUIDE.html`. Распакуйте весь Windows-пакет и запустите `START_QUANT_PRICE_LIVE.cmd`. `VERSION.json` содержит commit, `SHA256SUMS.txt` — суммы файлов.
+**Версия 6.1:** полный маршрут работы и все 15 улучшений — [WORKBENCH_GUIDE_RU.md](WORKBENCH_GUIDE_RU.md), офлайн `WORKBENCH_GUIDE.html`. Распакуйте весь Windows-пакет и запустите `START_QUANT_PRICE_LIVE.cmd`. `VERSION.json` содержит commit, `SHA256SUMS.txt` — суммы файлов.
 
 
 ## Новая лаборатория версии 5

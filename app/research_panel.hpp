@@ -12,11 +12,13 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTimer>
+#include <QVBoxLayout>
 #include <atomic>
 #include <map>
 #include <memory>
@@ -49,8 +51,22 @@ class ResearchPanel : public QWidget {
     void start_online_test();
     bool online_ready();
     void set_test_view(int index);
+    void show_demo();
+    QSize sizeHint() const override { return {1000, 600}; }
+    QSize minimumSizeHint() const override { return {640, 350}; }
+    int heightForWidth(int) const override { return minimumSizeHint().height(); }
 
   private:
+    void update_journey();
+    void next_step();
+    bool journey_test();
+    QWidget *data_page_, *project_page_, *about_page_, *expert_controls_, *analytics_expert_;
+    QVBoxLayout *data_layout_, *quality_layout_;
+    QListWidget *journey_;
+    QLabel *dataset_context_, *step_title_, *step_hint_, *result_context_, *result_banner_;
+    QLabel *return_card_, *drawdown_card_, *fills_card_, *cost_card_;
+    QPushButton *next_ = nullptr, *back_ = nullptr, *cancel_button_ = nullptr;
+    bool result_current_ = false, show_result_when_ready_ = false, source_dirty_ = false;
     QWidget *workbench_page();
     void setup_workbench();
     void preflight();
@@ -131,6 +147,7 @@ class ResearchPanel : public QWidget {
     QCheckBox *entry_all_, *exit_all_;
     std::vector<RuleUi> entry_rules_, exit_rules_;
     QPushButton *calculate_, *load_;
+    QPushButton *paper_play_ = nullptr, *paper_step_ = nullptr;
     QLabel *status_, *quality_, *live_quality_, *statistics_, *tests_, *feature_text_, *report_,
         *paper_status_;
     QTableWidget *correlations_, *folds_, *journal_, *features_table_, *backtest_journal_;
@@ -138,7 +155,7 @@ class ResearchPanel : public QWidget {
     VisualChart *distribution_chart_, *acf_chart_, *price_chart_, *equity_chart_, *drawdown_chart_,
         *paper_chart_;
     MarketHistory loader_;
-    QFutureWatcher<LabResult> *worker_;
+    QFutureWatcher<LabResult> *worker_ = nullptr;
     std::shared_ptr<std::atomic<bool>> cancel_;
     QTimer paper_timer_;
     std::map<QString, std::vector<quant::Bar>> data_;

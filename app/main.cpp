@@ -7,7 +7,7 @@
 #include <memory>
 #include <cstdio>
 int main(int argc,char**argv){
-    QApplication app(argc,argv);QCoreApplication::setOrganizationName("QuantPriceLab");QCoreApplication::setApplicationName("QuantPriceLive");QCoreApplication::setApplicationVersion("6.0.0");
+    QApplication app(argc,argv);QCoreApplication::setOrganizationName("QuantPriceLab");QCoreApplication::setApplicationName("QuantPriceLive");QCoreApplication::setApplicationVersion("6.1.0");
     const auto args=app.arguments();const bool online_lab=args.contains("--check-lab");const bool lab=args.contains("--lab-test");const bool soak=args.contains("--soak-test");const bool visuals=args.contains("--visuals-test"),privacy=args.contains("--privacy-test");
     const bool smoke=args.contains("--smoke-test"),moex=args.contains("--check-moex"),tools=args.contains("--tools-test"),stress=args.contains("--stress-test"),profile=args.contains("--profile");
     if(args.contains("--check-catalog")){

@@ -2,7 +2,7 @@
 setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
-echo Quant Price Live 6.0.0 — учебное приложение, без реальных заявок
+echo Quant Price Live 6.1.0 — учебное приложение, без реальных заявок
 if not exist "quant_price_live.exe" (
   echo Распакуйте весь ZIP в отдельную папку. Файл quant_price_live.exe не найден.
   pause

@@ -8,17 +8,20 @@
 namespace live {
 /** Searchable multi-select board catalog. It does not send trading instructions. */
 class CatalogDialog : public QDialog {
-public:
-    CatalogDialog(InstrumentCatalog& catalog,const QStringList& selected,QWidget* parent=nullptr);
+  public:
+    CatalogDialog(InstrumentCatalog &catalog, const QStringList &selected, QWidget *parent = nullptr,
+                  int selection_limit = 20);
     QStringList selection() const;
-private:
+
+  private:
     void populate();
     void filter();
     void update_count();
-    InstrumentCatalog& catalog_;
+    InstrumentCatalog &catalog_;
     QSet<QString> checked_;
-    QLineEdit* search_;
-    QListWidget* list_;
-    QLabel *status_,*count_;
+    int selection_limit_;
+    QLineEdit *search_;
+    QListWidget *list_;
+    QLabel *status_, *count_;
 };
-}
+} // namespace live
