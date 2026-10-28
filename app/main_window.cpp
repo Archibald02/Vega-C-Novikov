@@ -4,6 +4,7 @@
 #include <QApplication>
 #include <QDateTime>
 #include <QDesktopServices>
+#include <QFontMetrics>
 #include <QFormLayout>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -1128,6 +1129,11 @@ bool MainWindow::exercise_lab_test() {
     return lab_->self_test();
 }
 bool MainWindow::exercise_visuals_test() {
+    const QFontMetrics glyphs(font());
+    if (!glyphs.inFont(QChar('A')) || !glyphs.inFont(QChar(0x042F))) {
+        std::fprintf(stderr, "Visual font check: Latin/Cyrillic glyphs missing\n");
+        return false;
+    }
     if (!exercise_tools_test()) {
         std::fprintf(stderr, "Visual precondition: tools scenario failed\n");
         return false;
