@@ -24,6 +24,7 @@
 #include <memory>
 namespace live {
 struct LabResult {
+    quant::Strategy explained_strategy;
     quant::Distribution distribution;
     quant::Stationarity stationarity;
     quant::Correlation correlation;
@@ -58,6 +59,9 @@ class ResearchPanel : public QWidget {
 
   private:
     void update_journey();
+    void explain_bar(int index);
+    QSpinBox *explanation_bar_ = nullptr;
+    QLabel *explanation_ = nullptr;
     void next_step();
     bool journey_test();
     QWidget *data_page_, *project_page_, *about_page_, *expert_controls_, *analytics_expert_;

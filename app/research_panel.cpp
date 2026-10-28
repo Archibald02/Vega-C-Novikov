@@ -613,6 +613,8 @@ void ResearchPanel::clear_private_state() {
     tests_->clear();
     feature_text_->clear();
     report_->clear();
+    explanation_->clear();
+    explanation_bar_->setEnabled(false);
     paper_status_->setText(QStringLiteral("Счёт очищен."));
     for (auto *t : {correlations_, folds_, journal_, features_table_, backtest_journal_})
         t->setRowCount(0);
@@ -869,6 +871,21 @@ QWidget *ResearchPanel::report_page() {
     fills_card_ = card(QStringLiteral("Исполнений"));
     cost_card_ = card(QStringLiteral("Издержки, ₽"));
     layout->addLayout(summary);
+    auto *explanation_box = new QWidget;
+    auto *explanation_layout = new QVBoxLayout(explanation_box);
+    explanation_layout->addWidget(text(QStringLiteral("Выберите номер закрытой свечи завершённого расчёта. "
+                                                      "Условия оцениваются на её закрытии; исполнение и "
+                                                      "ограничения счёта смотрите в журнале сделок.")));
+    explanation_bar_ = integer(1, 1, 1);
+    explanation_bar_->setAccessibleName(QStringLiteral("Свеча для объяснения сигнала"));
+    explanation_bar_->setEnabled(false);
+    explanation_layout->addWidget(explanation_bar_);
+    explanation_ = text(QStringLiteral("Сначала выполните расчёт стратегии."));
+    explanation_->setTextFormat(Qt::PlainText);
+    explanation_layout->addWidget(explanation_);
+    connect(explanation_bar_, qOverload<int>(&QSpinBox::valueChanged), this, &ResearchPanel::explain_bar);
+    layout->addWidget(
+        ui::fold(QStringLiteral("Почему появился сигнал? Разбор условий по свечам"), explanation_box));
     auto *walk_parameters = new QWidget;
     auto *row = new QHBoxLayout(walk_parameters);
     train_ = integer(120, 60, 300);
@@ -1079,6 +1096,7 @@ void ResearchPanel::calculate() {
         QtConcurrent::run([bars, complete_bars, series, config, window, lags, adf, kpss, train, test,
                            cancelled, parameters, hash, source, holdout, split, embargo] {
             LabResult r;
+            r.explained_strategy = config.strategy;
             r.parameters = parameters;
             r.hash = hash;
             r.source = source;
@@ -1122,6 +1140,73 @@ void ResearchPanel::calculate() {
         }));
     update_journey();
 }
+void ResearchPanel::explain_bar(int index) {
+    const auto &r = last_result_;
+    if (index < 1 || static_cast<std::size_t>(index) > r.features.size()) {
+        explanation_->setText(QStringLiteral("Нет рассчитанной свечи."));
+        return;
+    }
+    quant::Features previous;
+    previous.fill(quant::unavailable());
+    if (index > 1)
+        previous = r.features[static_cast<std::size_t>(index - 2)];
+    const auto &current = r.features[static_cast<std::size_t>(index - 1)];
+    QStringList lines{QStringLiteral("Зафиксированный результат: %1\nСвеча №%2. Отпечаток данных: %3")
+                          .arg(r.source)
+                          .arg(index)
+                          .arg(r.hash.left(16))};
+    const auto names = feature_names();
+    const auto describe = [&](const quant::RuleGroup &group, const QString &title) {
+        lines << QStringLiteral("\n%1 • %2 • сигнал: %3")
+                     .arg(title, group.all ? QStringLiteral("И") : QStringLiteral("ИЛИ"),
+                          quant::evaluate(group, previous, current) ? QStringLiteral("да")
+                                                                    : QStringLiteral("нет"));
+        for (const auto &rule : group.rules) {
+            if (!rule.enabled) {
+                lines << QStringLiteral("Условие выключено");
+                continue;
+            }
+            const auto lhs = static_cast<std::size_t>(rule.lhs), rhs = static_cast<std::size_t>(rule.rhs);
+            if (lhs >= current.size() || rhs >= current.size()) {
+                lines << QStringLiteral("Некорректное условие");
+                continue;
+            }
+            const double a = current[lhs],
+                         b = rule.rhs == quant::Feature::Constant ? rule.value : current[rhs];
+            const double pa = previous[lhs],
+                         pb = rule.rhs == quant::Feature::Constant ? rule.value : previous[rhs];
+            const bool crossing =
+                rule.op == quant::Compare::CrossAbove || rule.op == quant::Compare::CrossBelow;
+            const bool ready = std::isfinite(a) && std::isfinite(b) &&
+                               (!crossing || (std::isfinite(pa) && std::isfinite(pb)));
+            const bool match = quant::evaluate(quant::RuleGroup{{rule}, true}, previous, current);
+            const QStringList operations{QStringLiteral("выше"), QStringLiteral("ниже"),
+                                         QStringLiteral("пересекает вверх"),
+                                         QStringLiteral("пересекает вниз")};
+            lines << QStringLiteral("%1 %2 %3: %4. Сейчас: %5 / %6%7")
+                         .arg(names.value(static_cast<int>(lhs)), operations.value(static_cast<int>(rule.op)),
+                              rule.rhs == quant::Feature::Constant ? fmt(rule.value)
+                                                                   : names.value(static_cast<int>(rhs)),
+                              !ready  ? QStringLiteral("недостаточно наблюдений / значение недоступно")
+                              : match ? QStringLiteral("выполнено")
+                                      : QStringLiteral("не выполнено"),
+                              fmt(a), fmt(b),
+                              crossing ? QStringLiteral("; предыдущая свеча: %1 / %2").arg(fmt(pa), fmt(pb))
+                                       : QString());
+        }
+    };
+    if (r.explained_strategy.buy_hold)
+        lines << QStringLiteral("Режим удержания: вход задаётся моделью удержания, "
+                                "условия входа не используются.");
+    else
+        describe(r.explained_strategy.entry, QStringLiteral("Вход"));
+    describe(r.explained_strategy.exit, QStringLiteral("Выход"));
+    lines << QStringLiteral("\nСигнал не гарантирует сделку: учитываются позиция, деньги, задержка "
+                            "исполнения, стопы и лимиты риска. Этот разбор относится только к "
+                            "исходным правилам бэктеста, не к подобранным правилам "
+                            "walk-forward/holdout.");
+    explanation_->setText(lines.join('\n'));
+}
 void ResearchPanel::show_distribution() {
     const auto &d = last_result_.distribution;
     if (d.simple.empty())
@@ -1143,6 +1228,9 @@ void ResearchPanel::show_distribution() {
     }
 }
 void ResearchPanel::present(const LabResult &r) {
+    explanation_bar_->setRange(1, std::max(1, static_cast<int>(r.features.size())));
+    explanation_bar_->setEnabled(!r.features.empty());
+    explain_bar(explanation_bar_->value());
     auto bars = selected_bars();
     if (bars.size() > r.features.size())
         bars.resize(r.features.size());
@@ -1466,8 +1554,25 @@ bool ResearchPanel::self_test() {
     r.simulation = quant::backtest(bars, config);
     r.baseline = quant::buy_hold(bars, config);
     r.walk = quant::walk_forward(bars, config);
+    r.explained_strategy = config.strategy;
     last_result_ = r;
     present(r);
+    explanation_bar_->setValue(1);
+    explain_bar(1);
+    if (!explanation_->text().contains(QStringLiteral("недостаточно наблюдений")))
+        return false;
+    explanation_bar_->setValue(100);
+    const auto frozen_explanation = explanation_->text();
+    const int old_fast = fast_->value();
+    fast_->setValue(old_fast + 1);
+    explain_bar(100);
+    if (explanation_->text() != frozen_explanation)
+        return false;
+    fast_->setValue(old_fast);
+    explain_bar(0);
+    if (!explanation_->text().contains(QStringLiteral("Нет рассчитанной свечи")))
+        return false;
+    explain_bar(100);
     {
         QEventLoop loop;
         connect(worker_, &QFutureWatcher<LabResult>::finished, &loop, &QEventLoop::quit);
