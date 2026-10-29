@@ -84,6 +84,13 @@ class ResearchPanel : public QWidget {
     QString report_html(bool compact = false) const;
     void export_report(bool pdf);
     void record_run(const LabResult &result);
+    void refresh_runs();
+    void setup_experiments(QVBoxLayout *layout);
+    bool save_experiments(const QString &path) const;
+    bool open_experiments(const QString &path);
+    bool experiments_test();
+    void compare_experiments();
+    QLabel *experiment_detail_ = nullptr;
     void refresh_paper();
     void start_live_paper();
     void fetch_reference();
@@ -117,6 +124,8 @@ class ResearchPanel : public QWidget {
         quant::Metrics metrics;
         std::vector<double> equity;
         double oos = quant::unavailable();
+        QString hypothesis;
+        bool imported = false;
     };
     std::vector<SavedRun> runs_;
     std::map<QString, bool> holdout_used_;

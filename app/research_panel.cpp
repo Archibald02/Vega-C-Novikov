@@ -566,6 +566,8 @@ void ResearchPanel::clear_private_state() {
     cancel_work();
     data_.clear();
     runs_.clear();
+    if (experiment_detail_)
+        experiment_detail_->clear();
     runs_table_->setRowCount(0);
     runs_chart_->clear();
     holdout_used_.clear();

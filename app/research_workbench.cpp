@@ -214,6 +214,7 @@ QWidget *ResearchPanel::workbench_page() {
     l->addWidget(runs_table_);
     runs_chart_ = new VisualChart;
     l->addWidget(runs_chart_);
+    setup_experiments(l);
     l->addWidget(note(QStringLiteral("В памяти — последние 10 запусков; на графике последние 6, капитал "
                                      "нормирован к 100. Сравнивайте одинаковые периоды и источник. Издержки "
                                      "включены в результат, но отдельный налоговый расчёт не выполняется.")));
@@ -1074,12 +1075,29 @@ void ResearchPanel::record_run(const LabResult &r) {
     for (const auto &t : r.robustness.stress)
         row(stress_, {QString::fromStdString(t.name), num(t.metrics.total_return * 100),
                       num(t.metrics.max_drawdown * 100), num(t.metrics.turnover)});
+    refresh_runs();
+    if (r.has_holdout)
+        holdout_status_->setText(
+            holdout_status_->text() +
+            QStringLiteral("\nФинальный тест: %1%, просадка %2%; заморожено SMA %3/%4, разрыв %5 свечей. "
+                           "Исследовано настроек: 8 на обучении; ручных запусков: %6.")
+                .arg(num(r.holdout.test.metrics.total_return * 100),
+                     num(r.holdout.test.metrics.max_drawdown * 100))
+                .arg(r.holdout.frozen.strategy.fast)
+                .arg(r.holdout.frozen.strategy.slow)
+                .arg(r.holdout.gap)
+                .arg(attempts_));
+    preflight();
+}
+void ResearchPanel::refresh_runs() {
+    runs_table_->setRowCount(0);
     QVector<PlotLine> lines;
     const QStringList colors{"#39d2b0", "#829eff", "#efc571", "#f08c98", "#b99fe8", "#77b6d0"};
     const auto first = runs_.size() > 6 ? runs_.size() - 6 : 0;
     for (std::size_t i = 0; i < runs_.size(); ++i) {
         const auto &run = runs_[i];
-        row(runs_table_, {run.label, num(run.metrics.total_return * 100), num(run.metrics.max_drawdown * 100),
+        row(runs_table_, {(run.imported ? QStringLiteral("Файл • ") : QString()) + run.label,
+                          num(run.metrics.total_return * 100), num(run.metrics.max_drawdown * 100),
                           num(run.metrics.turnover), num(run.metrics.fees + run.metrics.execution_cost),
                           num(run.oos * 100), run.hash.left(12)});
         runs_table_->item(runs_table_->rowCount() - 1, 0)
@@ -1094,18 +1112,7 @@ void ResearchPanel::record_run(const LabResult &r) {
     runs_chart_->set_lines(
         lines, QStringLiteral("Сравнение запусков, начальный капитал = 100"),
         QStringLiteral("Ось X: порядковый номер свечи; разные периоды не синхронизированы"));
-    if (r.has_holdout)
-        holdout_status_->setText(
-            holdout_status_->text() +
-            QStringLiteral("\nФинальный тест: %1%, просадка %2%; заморожено SMA %3/%4, разрыв %5 свечей. "
-                           "Исследовано настроек: 8 на обучении; ручных запусков: %6.")
-                .arg(num(r.holdout.test.metrics.total_return * 100),
-                     num(r.holdout.test.metrics.max_drawdown * 100))
-                .arg(r.holdout.frozen.strategy.fast)
-                .arg(r.holdout.frozen.strategy.slow)
-                .arg(r.holdout.gap)
-                .arg(attempts_));
-    preflight();
+    compare_experiments();
 }
 QString ResearchPanel::fingerprint(const std::vector<quant::Bar> &bars) const { return bars_hash(bars); }
 QString ResearchPanel::report_html(bool compact) const {
@@ -1263,6 +1270,8 @@ bool ResearchPanel::workbench_test() {
         return false;
     const auto old = configuration();
     const auto previous_result = last_result_;
+    if (!experiments_test())
+        return false;
     auto bad = old;
     auto values = bad.value("values").toObject();
     values.insert("study_lot", -1);
