@@ -541,6 +541,8 @@ void ResearchPanel::set_feed_quality(const QString &value) {
         live_quality_->setText(value);
 }
 void ResearchPanel::cancel_work() {
+    if (snapshot_cancel_)
+        snapshot_cancel_->store(true);
     if (cancel_)
         cancel_->store(true);
     loader_.cancel();
@@ -1027,7 +1029,7 @@ std::vector<quant::Bar> ResearchPanel::selected_bars() const {
     return it == data_.end() ? std::vector<quant::Bar>{} : it->second;
 }
 void ResearchPanel::calculate() {
-    if (loading_ || worker_->isRunning())
+    if (loading_ || worker_->isRunning() || (snapshot_worker_ && snapshot_worker_->isRunning()))
         return;
     if (source_dirty_) {
         status_->setText(QStringLiteral("Параметры загрузки изменены. Сначала загрузите новый диапазон."));
@@ -1069,6 +1071,10 @@ void ResearchPanel::calculate() {
         return;
     const int embargo = gap_->value();
     auto parameters = configuration();
+    auto effective_values = parameters.value("values").toObject();
+    effective_values.insert("study_lot", static_cast<double>(config.lot));
+    effective_values.insert("study_tick", config.tick_size);
+    parameters.insert("values", effective_values);
     parameters.insert("data_begin_utc", QString::number(bars.front().time));
     parameters.insert("data_end_utc", QString::number(bars.back().end));
     parameters.insert("bar_count", static_cast<int>(bars.size()));
@@ -1094,52 +1100,53 @@ void ResearchPanel::calculate() {
         }
     calculate_->setEnabled(false);
     status_->setText(QStringLiteral("Считаем в фоне. Окно остаётся доступным; можно отменить расчёт."));
-    worker_->setFuture(
-        QtConcurrent::run([bars, complete_bars, series, config, window, lags, adf, kpss, train, test,
-                           cancelled, parameters, hash, source, holdout, split, embargo] {
-            LabResult r;
-            r.explained_strategy = config.strategy;
-            r.parameters = parameters;
-            r.hash = hash;
-            r.source = source;
-            try {
-                std::vector<double> prices;
-                for (const auto &b : bars)
-                    prices.push_back(b.close);
-                r.distribution = quant::distribution(prices);
-                r.acf = quant::acf(r.distribution.log_returns,
-                                   std::min<int>(lags, static_cast<int>(prices.size()) / 2 - 1));
-                r.pacf = quant::pacf(r.distribution.log_returns,
-                                     std::min<int>(lags, static_cast<int>(prices.size()) / 2 - 1));
-                r.stationarity = quant::stationarity(prices, adf, kpss);
-                r.features = quant::candle_features(bars, config.strategy.fast, config.strategy.slow, window);
-                if (cancelled->load())
-                    return r;
-                if (std::any_of(series.begin(), series.end(),
-                                [](const std::vector<quant::Bar> &s) { return s.empty(); }))
-                    r.correlation.matrix.assign(series.size(),
-                                                std::vector<double>(series.size(), quant::unavailable()));
-                else
-                    r.correlation = quant::aligned_correlation(series);
-                r.simulation = quant::backtest(bars, config);
-                r.baseline = quant::buy_hold(bars, config);
-                if (cancelled->load())
-                    return r;
-                r.walk = quant::walk_forward(bars, config, train, test);
-                if (cancelled->load())
-                    return r;
-                r.robustness = quant::robustness(bars, config, cancelled.get());
-                if (holdout && !cancelled->load()) {
-                    r.holdout = quant::final_holdout(complete_bars, config, split, embargo);
-                    r.has_holdout = true;
-                }
-            } catch (const std::exception &) {
-                r.error =
-                    QStringLiteral("Расчёт невозможен: недостаточно данных, некорректные интервалы/параметры "
-                                   "или вырожденный ряд. Проверьте окно и число лагов.");
+    worker_->setFuture(QtConcurrent::run([bars, complete_bars, series, config, window, lags, adf, kpss, train,
+                                          test, cancelled, parameters, hash, source, holdout, split,
+                                          embargo] {
+        LabResult r;
+        r.explained_strategy = config.strategy;
+        r.parameters = parameters;
+        r.hash = hash;
+        r.source = source;
+        try {
+            std::vector<double> prices;
+            for (const auto &b : bars)
+                prices.push_back(b.close);
+            r.distribution = quant::distribution(prices);
+            r.acf = quant::acf(r.distribution.log_returns,
+                               std::min<int>(lags, static_cast<int>(prices.size()) / 2 - 1));
+            r.pacf = quant::pacf(r.distribution.log_returns,
+                                 std::min<int>(lags, static_cast<int>(prices.size()) / 2 - 1));
+            r.stationarity = quant::stationarity(prices, adf, kpss);
+            r.features = quant::candle_features(bars, config.strategy.fast, config.strategy.slow, window);
+            if (cancelled->load())
+                return r;
+            if (std::any_of(series.begin(), series.end(),
+                            [](const std::vector<quant::Bar> &s) { return s.empty(); }))
+                r.correlation.matrix.assign(series.size(),
+                                            std::vector<double>(series.size(), quant::unavailable()));
+            else
+                r.correlation = quant::aligned_correlation(series);
+            r.simulation = quant::backtest(bars, config);
+            r.snapshot = std::make_shared<const ReplaySnapshot>(ReplaySnapshot{bars, config, r.simulation});
+            r.baseline = quant::buy_hold(bars, config);
+            if (cancelled->load())
+                return r;
+            r.walk = quant::walk_forward(bars, config, train, test);
+            if (cancelled->load())
+                return r;
+            r.robustness = quant::robustness(bars, config, cancelled.get());
+            if (holdout && !cancelled->load()) {
+                r.holdout = quant::final_holdout(complete_bars, config, split, embargo);
+                r.has_holdout = true;
             }
-            return r;
-        }));
+        } catch (const std::exception &) {
+            r.error =
+                QStringLiteral("Расчёт невозможен: недостаточно данных, некорректные интервалы/параметры "
+                               "или вырожденный ряд. Проверьте окно и число лагов.");
+        }
+        return r;
+    }));
     update_journey();
 }
 void ResearchPanel::explain_bar(int index) {

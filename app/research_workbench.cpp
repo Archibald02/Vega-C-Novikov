@@ -1048,6 +1048,7 @@ void ResearchPanel::record_run(const LabResult &r) {
         {QStringLiteral("#%1 • %2").arg(attempts_).arg(QDateTime::currentDateTimeUtc().toString(Qt::ISODate)),
          hash, r.source, r.parameters, r.simulation.metrics, r.simulation.equity,
          r.walk.folds.empty() ? quant::unavailable() : r.walk.compounded_return});
+    runs_.back().snapshot = r.snapshot;
     stability_->setRowCount(0);
     stress_->setRowCount(0);
     runs_table_->setRowCount(0);
@@ -1240,7 +1241,7 @@ QString ResearchPanel::report_html(bool compact) const {
     return html;
 }
 void ResearchPanel::export_report(bool pdf) {
-    if (exporting_) {
+    if (exporting_ || (snapshot_worker_ && snapshot_worker_->isRunning())) {
         status_->setText(QStringLiteral("Дождитесь завершения текущего экспорта."));
         return;
     }

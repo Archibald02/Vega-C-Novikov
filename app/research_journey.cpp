@@ -20,7 +20,8 @@ void ResearchPanel::update_journey() {
     if (row >= 0)
         step_title_->setText(journey_->item(row)->text());
     const auto bars = selected_bars();
-    const bool busy = loading_ || (worker_ && worker_->isRunning());
+    const bool busy =
+        loading_ || (worker_ && worker_->isRunning()) || (snapshot_worker_ && snapshot_worker_->isRunning());
     const auto size = reserve_->isChecked() ? bars.size() * 8 / 10 : bars.size();
     const bool ready = size >= 40 && !source_dirty_ && !loading_;
     calculate_->setEnabled(ready && !busy);

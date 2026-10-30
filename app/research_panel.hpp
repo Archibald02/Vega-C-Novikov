@@ -3,6 +3,7 @@
 #include "market_history.hpp"
 #include "quant/research.hpp"
 #include "quant/robustness.hpp"
+#include "research_snapshot.hpp"
 #include "visual_chart.hpp"
 #include <QCheckBox>
 #include <QComboBox>
@@ -24,6 +25,7 @@
 #include <memory>
 namespace live {
 struct LabResult {
+    std::shared_ptr<const ReplaySnapshot> snapshot;
     quant::Strategy explained_strategy;
     quant::Distribution distribution;
     quant::Stationarity stationarity;
@@ -90,6 +92,9 @@ class ResearchPanel : public QWidget {
     bool open_experiments(const QString &path);
     bool experiments_test();
     void compare_experiments();
+    void snapshot_operation(bool save);
+    QFutureWatcher<QString> *snapshot_worker_ = nullptr;
+    std::shared_ptr<std::atomic<bool>> snapshot_cancel_;
     QLabel *experiment_detail_ = nullptr;
     void refresh_paper();
     void start_live_paper();
@@ -126,6 +131,7 @@ class ResearchPanel : public QWidget {
         double oos = quant::unavailable();
         QString hypothesis;
         bool imported = false;
+        std::shared_ptr<const ReplaySnapshot> snapshot;
     };
     std::vector<SavedRun> runs_;
     std::map<QString, bool> holdout_used_;
