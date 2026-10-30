@@ -63,6 +63,9 @@ QWidget *MainWindow::home_panel() {
         new QPushButton(QStringLiteral("Понять комиссии, риск и подбор параметров — учебные задания"));
     connect(lessons, &QPushButton::clicked, this, [this] { tabs_->setCurrentIndex(9); });
     layout->addWidget(lessons, 0, Qt::AlignLeft);
+    auto *portfolio = new QPushButton(QStringLiteral("Исследовать портфель нескольких акций"));
+    connect(portfolio, &QPushButton::clicked, this, [this] { tabs_->setCurrentIndex(10); });
+    layout->addWidget(portfolio, 0, Qt::AlignLeft);
     layout->addStretch();
     return page;
 }
@@ -77,6 +80,7 @@ void MainWindow::update_workspace() {
     quotes_nav_->setChecked(market);
     lab_nav_->setChecked(index == 7);
     learning_nav_->setChecked(index == 9);
+    portfolio_nav_->setChecked(index == 10);
     const QStringList names{
         QStringLiteral("Котировки • график текущих обновлений"),
         QStringLiteral("Котировки • учебный прогноз"),
@@ -87,7 +91,8 @@ void MainWindow::update_workspace() {
         QStringLiteral("Котировки • сравнение акций"),
         QStringLiteral("Исследование • отдельный набор закрытых свечей, только виртуальные сделки"),
         QStringLiteral("Начало • выберите задачу"),
-        QStringLiteral("Учебные задания • автономные синтетические примеры")};
+        QStringLiteral("Учебные задания • автономные синтетические примеры"),
+        QStringLiteral("Портфель • общий виртуальный капитал и синхронные свечи")};
     workspace_context_->setText(names.value(index));
 }
 } // namespace live

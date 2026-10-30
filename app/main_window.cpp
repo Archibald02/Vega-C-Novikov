@@ -95,6 +95,10 @@ MainWindow::MainWindow(bool test_mode) : test_mode_(test_mode) {
     learning_nav_->setCheckable(true);
     navigation->addWidget(learning_nav_);
     connect(learning_nav_, &QPushButton::clicked, this, [this] { tabs_->setCurrentIndex(9); });
+    portfolio_nav_ = new QPushButton(QStringLiteral("Портфель"));
+    portfolio_nav_->setCheckable(true);
+    navigation->addWidget(portfolio_nav_);
+    connect(portfolio_nav_, &QPushButton::clicked, this, [this] { tabs_->setCurrentIndex(10); });
     auto *quote_menu = new QMenu(quotes_nav_);
     const QList<QPair<QString, int>> destinations{{QStringLiteral("График текущих цен"), 0},
                                                   {QStringLiteral("Свечи с биржи"), 5},
@@ -290,6 +294,21 @@ MainWindow::MainWindow(bool test_mode) : test_mode_(test_mode) {
     learning_scroll->setWidgetResizable(true);
     learning_scroll->setWidget(learning_);
     tabs_->addTab(learning_scroll, QStringLiteral("Учебные задания"));
+    portfolio_ = new PortfolioPanel;
+    auto *portfolio_scroll = new QScrollArea;
+    portfolio_scroll->setFrameShape(QFrame::NoFrame);
+    portfolio_scroll->setWidgetResizable(true);
+    portfolio_scroll->setWidget(portfolio_);
+    tabs_->addTab(portfolio_scroll, QStringLiteral("Портфель"));
+    connect(portfolio_->import_button(), &QPushButton::clicked, this, [this] {
+        try {
+            portfolio_->set_input(lab_->portfolio_input());
+        } catch (const std::exception &) {
+            portfolio_->notice(
+                QStringLiteral("Сначала загрузите закрытые свечи в «Исследование», выберите основную акцию и "
+                               "дождитесь завершения задач. Скрытый резерв не импортируется."));
+        }
+    });
     tabs_->tabBar()->hide();
     tabs_->setCurrentIndex(8);
     tabs_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
@@ -636,6 +655,7 @@ void MainWindow::reset_local_data() {
     token_->clear();
     candles_->clear_private_state();
     lab_->clear_private_state();
+    portfolio_->clear_private_state();
     comparison_->clear();
     forecast_chart_->clear();
     forecast_enabled_->setChecked(false);
@@ -1087,7 +1107,7 @@ void MainWindow::stop_for_test() {
 }
 bool MainWindow::exercise_tools_test() {
     stop_for_test();
-    if (!learning_->self_test())
+    if (!learning_->self_test() || !portfolio_->self_test())
         return false;
     if (rows_.empty())
         return false;

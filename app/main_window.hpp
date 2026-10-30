@@ -4,6 +4,7 @@
 #include "instrument_catalog.hpp"
 #include "learning_panel.hpp"
 #include "market_feed.hpp"
+#include "portfolio_panel.hpp"
 #include "quant/rolling.hpp"
 #include "research_panel.hpp"
 #include "resource_monitor.hpp"
@@ -78,6 +79,7 @@ class MainWindow : public QMainWindow {
     void update_workspace();
     QWidget *quote_controls_, *quote_metrics_, *stream_footer_;
     QLabel *workspace_context_;
+    QPushButton *portfolio_nav_ = nullptr;
     QPushButton *learning_nav_ = nullptr;
     QPushButton *home_nav_, *quotes_nav_, *lab_nav_;
     QWidget *forecast_panel();
@@ -106,6 +108,7 @@ class MainWindow : public QMainWindow {
     HistoryPanel *candles_;
     ResearchPanel *lab_;
     LearningPanel *learning_;
+    PortfolioPanel *portfolio_;
     quint64 quality_rx_ = 0, quality_dup_ = 0, quality_old_ = 0, quality_invalid_ = 0, quality_network_ = 0,
             quality_reconnect_ = 0;
     VisualChart *comparison_, *forecast_chart_;

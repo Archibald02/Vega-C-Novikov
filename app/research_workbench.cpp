@@ -1115,6 +1115,52 @@ void ResearchPanel::refresh_runs() {
         QStringLiteral("Ось X: порядковый номер свечи; разные периоды не синхронизированы"));
     compare_experiments();
 }
+PortfolioInput ResearchPanel::portfolio_input() const {
+    if (loading_ || source_dirty_ || worker_->isRunning() ||
+        (snapshot_worker_ && snapshot_worker_->isRunning()))
+        throw std::invalid_argument("Research not ready");
+    const auto primary = selected_bars();
+    if (primary.size() < 3)
+        throw std::invalid_argument("No research data");
+    const auto count = reserve_->isChecked() ? primary.size() * 8 / 10 : primary.size();
+    if (count < 2)
+        throw std::invalid_argument("No training data");
+    const auto cutoff = primary[count - 1].end;
+    PortfolioInput out;
+    out.synthetic = synthetic_ && !local_project_;
+    out.metadata_known = true;
+    out.source = local_project_ ? QStringLiteral("ЛОКАЛЬНЫЙ ПРОЕКТ • происхождение не перепроверено")
+                 : synthetic_   ? QStringLiteral("ДЕМО • синтетические данные исследования")
+                                : QStringLiteral("MOEX ISS • задержанные данные исследования");
+    out.source += reserve_->isChecked() ? QStringLiteral(" • резервные 20% не включены")
+                                        : QStringLiteral(" • резерв отключён пользователем");
+    for (const auto &entry : data_) {
+        quant::PortfolioAsset a;
+        a.symbol = entry.first.toStdString();
+        for (const auto &bar : entry.second)
+            if (bar.end <= cutoff)
+                a.bars.push_back(bar);
+        if (out.synthetic)
+            a.tick_size = .01;
+        else
+            for (const auto &i : catalog_.instruments())
+                if (i.symbol == entry.first) {
+                    a.lot = i.lot_size;
+                    a.tick_size = i.tick_size;
+                    break;
+                }
+        if (a.tick_size <= 0 && entry.first == selected_->currentText() && manual_metadata_->isChecked()) {
+            a.lot = lot_->value();
+            a.tick_size = tick_->value();
+        }
+        if (a.tick_size <= 0)
+            out.metadata_known = false;
+        out.assets.push_back(std::move(a));
+    }
+    if (out.assets.empty() || out.assets.size() > 6)
+        throw std::invalid_argument("Portfolio size");
+    return out;
+}
 QString ResearchPanel::fingerprint(const std::vector<quant::Bar> &bars) const { return bars_hash(bars); }
 QString ResearchPanel::report_html(bool compact) const {
     const auto &r = last_result_;

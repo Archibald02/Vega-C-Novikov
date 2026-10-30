@@ -155,7 +155,10 @@ TEST_CASE("History paginates without repeated pages, publishes atomically and ca
     QObject::connect(&history,&live::MarketHistory::truncated,&history,[&](const QString&){++limited;});
     history.load_range("SBER",QDate(2000,1,1),QDate(2019,12,31),24);
     // Paging is spaced to avoid hammering ISS; ten pages take at least 1.35 s.
-    REQUIRE(wait_for([&]{return total==5000;},5000));CHECK(pages==10);CHECK(limited==1);CHECK_FALSE(history.busy());
+    // Scheduling ten spaced requests under sanitizers/contended CI needs slack; all atomicity/page-count checks remain.
+    const bool completed=wait_for([&]{return total==5000;},10000);
+    INFO("pages=" << pages << ", total=" << total << ", truncated=" << limited);
+    REQUIRE(completed);CHECK(pages==10);CHECK(limited==1);CHECK_FALSE(history.busy());
     history.load_range("SBER",QDate(2000,1,1),QDate(2019,12,31),24,true);history.cancel();events(30);CHECK(total==5000);CHECK_FALSE(history.busy());
 }
 TEST_CASE("A server that ignores pagination cannot loop or publish an incomplete success") {
@@ -166,7 +169,7 @@ TEST_CASE("A server that ignores pagination cannot loop or publish an incomplete
     live::MarketHistory history(nullptr,server.url());int errors=0,success=0;
     QObject::connect(&history,&live::MarketHistory::failed,&history,[&](const auto&){++errors;});QObject::connect(&history,&live::MarketHistory::loaded,&history,[&]{++success;});
     history.load_range("SBER",QDate(2024,1,1),QDate(2026,1,1),24);
-    REQUIRE(wait_for([&]{return errors>0;}));CHECK(server.received.size()==2);CHECK(success==0);CHECK_FALSE(history.busy());
+    REQUIRE(wait_for([&]{return errors>0;},5000));CHECK(server.received.size()==2);CHECK(success==0);CHECK_FALSE(history.busy());
 }
 TEST_CASE("Seeded malformed input stress does not produce invalid quotes") {
     std::mt19937 random(431);for(int i=0;i<5000;++i){QByteArray bytes;const int n=random()%1024;bytes.resize(n);for(int j=0;j<n;++j)bytes[j]=static_cast<char>(random()%256);const auto q=live::parse_alor(bytes);CHECK_FALSE(q);CHECK(live::parse_moex(bytes).isEmpty());CHECK(live::parse_catalog(bytes).isEmpty());CHECK(live::parse_candles(QJsonDocument::fromJson(bytes)).isEmpty());}

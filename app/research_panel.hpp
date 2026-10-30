@@ -1,6 +1,7 @@
 #pragma once
 #include "instrument_catalog.hpp"
 #include "market_history.hpp"
+#include "portfolio_input.hpp"
 #include "quant/research.hpp"
 #include "quant/robustness.hpp"
 #include "research_snapshot.hpp"
@@ -50,6 +51,7 @@ class ResearchPanel : public QWidget {
     void set_feed_quality(const QString &text);
     void clear_private_state();
     bool self_test();
+    PortfolioInput portfolio_input() const;
     bool privacy_test();
     void start_online_test();
     bool online_ready();

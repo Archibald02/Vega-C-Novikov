@@ -1546,6 +1546,14 @@ bool ResearchPanel::self_test() {
     const auto bars = selected_bars();
     if (bars.size() != 360)
         return false;
+    const auto portfolio = portfolio_input();
+    const auto visible = reserve_->isChecked() ? bars.size() * 8 / 10 : bars.size();
+    if (portfolio.assets.size() != 3 || !portfolio.synthetic || !portfolio.metadata_known)
+        return false;
+    for (const auto &asset : portfolio.assets)
+        for (const auto &bar : asset.bars)
+            if (bar.end > bars[visible - 1].end)
+                return false;
     std::vector<double> prices;
     for (const auto &b : bars)
         prices.push_back(b.close);
