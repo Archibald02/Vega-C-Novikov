@@ -1,5 +1,6 @@
 #pragma once
 #include "portfolio_input.hpp"
+#include "portfolio_project.hpp"
 #include "ui_helpers.hpp"
 #include "visual_chart.hpp"
 #include <QCheckBox>
@@ -17,7 +18,13 @@ struct PortfolioOutcome {
     quant::PortfolioResult result, baseline;
     QString source, error;
 };
-/** Synchronous-bar, shared-cash educational portfolio research. No order API or account access. */
+struct PortfolioFileOutcome {
+    PortfolioProject project;
+    QString error;
+    bool saved = false;
+};
+/** Synchronous-bar, shared-cash educational portfolio research. No order API or
+ * account access. */
 class PortfolioPanel : public QWidget {
   public:
     explicit PortfolioPanel(QWidget *parent = nullptr);
@@ -36,6 +43,10 @@ class PortfolioPanel : public QWidget {
     void calculate();
     void busy(bool on);
     void present(const PortfolioOutcome &outcome);
+    PortfolioProject project() const;
+    void apply_project(PortfolioProject project);
+    void project_file(bool save, QString path = {});
+    bool working() const;
     struct AssetRow {
         QCheckBox *enabled;
         QComboBox *rules;
@@ -46,7 +57,7 @@ class PortfolioPanel : public QWidget {
     std::vector<AssetRow> rows_;
     PortfolioInput input_;
     QTableWidget *assets_, *positions_, *journal_;
-    QPushButton *import_, *demo_, *equal_, *run_, *cancel_;
+    QPushButton *import_, *demo_, *equal_, *run_, *cancel_, *save_, *open_;
     QLabel *source_, *status_, *summary_;
     QDoubleSpinBox *capital_, *invested_, *weight_limit_, *group_limit_, *commission_, *fixed_, *spread_,
         *slippage_, *drawdown_, *daily_;
@@ -55,6 +66,7 @@ class PortfolioPanel : public QWidget {
     VisualChart *equity_, *drawdowns_;
     ui::WheelGuard *guard_;
     QFutureWatcher<PortfolioOutcome> *worker_;
+    QFutureWatcher<PortfolioFileOutcome> *file_worker_;
     std::shared_ptr<std::atomic<bool>> cancelled_;
 };
 } // namespace live

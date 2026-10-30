@@ -1,9 +1,11 @@
 #include "portfolio_panel.hpp"
 #include <QDateTime>
 #include <QEventLoop>
+#include <QFileDialog>
 #include <QFormLayout>
 #include <QHeaderView>
 #include <QScrollArea>
+#include <QTemporaryDir>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrentRun>
@@ -74,10 +76,11 @@ QString reason(const std::string &s) {
 PortfolioPanel::PortfolioPanel(QWidget *parent) : QWidget(parent) {
     auto *layout = new QVBoxLayout(this);
     layout->addWidget(ui::paragraph(QStringLiteral("Портфель • только виртуальный общий счёт • без плеча")));
-    layout->addWidget(ui::paragraph(
-        QStringLiteral("Целевые доли или правила SMA для нескольких акций. Сигнал рассчитывается на "
-                       "закрытии, сделки — на следующем общем открытии. Продажи выполняются первыми, покупки "
-                       "используют один остаток денег в порядке тикеров.")));
+    layout->addWidget(ui::paragraph(QStringLiteral("Целевые доли или правила SMA для нескольких акций. "
+                                                   "Сигнал рассчитывается на "
+                                                   "закрытии, сделки — на следующем общем открытии. Продажи "
+                                                   "выполняются первыми, покупки "
+                                                   "используют один остаток денег в порядке тикеров.")));
     auto *actions = new QHBoxLayout;
     demo_ = new QPushButton(QStringLiteral("Открыть ДЕМО портфеля"));
     import_ = new QPushButton(QStringLiteral("Взять свечи из исследования"));
@@ -85,8 +88,19 @@ PortfolioPanel::PortfolioPanel(QWidget *parent) : QWidget(parent) {
     for (auto *b : {demo_, import_, equal_})
         actions->addWidget(b);
     layout->addLayout(actions);
-    source_ = ui::paragraph(
-        QStringLiteral("Начните с синтетического ДЕМО или загрузите закрытые свечи в «Исследование»."));
+    auto *files = new QHBoxLayout;
+    save_ = new QPushButton(QStringLiteral("Сохранить портфель…"));
+    open_ = new QPushButton(QStringLiteral("Открыть портфель…"));
+    files->addWidget(save_);
+    files->addWidget(open_);
+    files->addStretch();
+    layout->addLayout(files);
+    layout->addWidget(ui::paragraph(QStringLiteral("Файл .qpp.json содержит цены, виртуальный капитал и "
+                                                   "настройки. Сохраняется только по вашей "
+                                                   "команде, без паролей и токенов. Открывается без сети; "
+                                                   "результат нужно рассчитать заново.")));
+    source_ = ui::paragraph(QStringLiteral("Начните с синтетического ДЕМО или загрузите закрытые "
+                                           "свечи в «Исследование»."));
     source_->setTextFormat(Qt::PlainText);
     layout->addWidget(source_);
     layout->addWidget(ui::paragraph(QStringLiteral("1. Состав и настройки")));
@@ -164,35 +178,53 @@ PortfolioPanel::PortfolioPanel(QWidget *parent) : QWidget(parent) {
                       QStringLiteral("Общие деньги, ₽"), QStringLiteral("Причина")});
     layout->addWidget(ui::fold(
         QStringLiteral("Журнал: первые 10000 событий, на экране последние 500 сохранённых"), journal_));
-    layout->addWidget(ui::fold(
-        QStringLiteral("Как читать результат и ограничения модели"),
-        ui::paragraph(QStringLiteral(
-            "Используются только точные общие начала/концы свечей; остальные интервалы исключаются, без "
-            "заполнения. Целевые количества округляются по лотам на закрытии. На следующем общем открытии "
-            "гэпы и издержки могут уменьшить исполнение; остаток отменяется. Сумма неактивных долей остаётся "
-            "деньгами. Группы — ручные, это не проверенная отраслевая классификация. Лимиты веса "
-            "ограничивают новые увеличения позиции; движение цен может изменить существующие веса. Лимиты "
-            "просадки/сессии наблюдаются на закрытиях и не гарантируют размер убытка. Остановка запрещает "
-            "новые входы; выход ждёт следующего общего открытия. Если данных больше нет или комиссии/цена "
-            "мешают выходу, позиция остаётся в отчёте. Итог — оценка по последним закрытиям, без выдуманной "
-            "финальной продажи. Во всех отмеченных строках применяется одна пара SMA; неотмеченные строки "
-            "сохраняют целевые доли. Объём торгов не ограничивает исполнение, биржевая очередь не "
-            "моделируется. Индивидуальных стопов, плеча, налогов, дивидендов и реальных заявок в этом "
-            "режиме нет. База — отдельный счёт равных долей с теми же издержками и ограничениями веса/денег, "
-            "без повторных ребалансировок и остановок просадки/сессии. Годовые Sharpe/Sortino/Calmar здесь "
-            "не рассчитываются."))));
+    layout->addWidget(
+        ui::fold(QStringLiteral("Как читать результат и ограничения модели"),
+                 ui::paragraph(QStringLiteral("Используются только точные общие начала/концы свечей; "
+                                              "остальные интервалы исключаются, без "
+                                              "заполнения. Целевые количества округляются по лотам на "
+                                              "закрытии. На следующем общем открытии "
+                                              "гэпы и издержки могут уменьшить исполнение; остаток "
+                                              "отменяется. Сумма неактивных долей остаётся "
+                                              "деньгами. Группы — ручные, это не проверенная отраслевая "
+                                              "классификация. Лимиты веса "
+                                              "ограничивают новые увеличения позиции; движение цен может "
+                                              "изменить существующие веса. Лимиты "
+                                              "просадки/сессии наблюдаются на закрытиях и не гарантируют "
+                                              "размер убытка. Остановка запрещает "
+                                              "новые входы; выход ждёт следующего общего открытия. Если "
+                                              "данных больше нет или комиссии/цена "
+                                              "мешают выходу, позиция остаётся в отчёте. Итог — оценка по "
+                                              "последним закрытиям, без выдуманной "
+                                              "финальной продажи. Во всех отмеченных строках применяется "
+                                              "одна пара SMA; неотмеченные строки "
+                                              "сохраняют целевые доли. Объём торгов не ограничивает "
+                                              "исполнение, биржевая очередь не "
+                                              "моделируется. Индивидуальных стопов, плеча, налогов, "
+                                              "дивидендов и реальных заявок в этом "
+                                              "режиме нет. База — отдельный счёт равных долей с теми же "
+                                              "издержками и ограничениями веса/денег, "
+                                              "без повторных ребалансировок и остановок просадки/сессии. "
+                                              "Годовые Sharpe/Sortino/Calmar здесь "
+                                              "не рассчитываются."))));
     layout->addStretch();
     worker_ = new QFutureWatcher<PortfolioOutcome>(this);
+    file_worker_ = new QFutureWatcher<PortfolioFileOutcome>(this);
     guard_ = new ui::WheelGuard(this);
     ui::prepare_controls(this);
     connect(demo_, &QPushButton::clicked, this, [this] { demo(); });
     connect(equal_, &QPushButton::clicked, this, [this] { equal_weights(); });
     connect(run_, &QPushButton::clicked, this, [this] { calculate(); });
+    connect(save_, &QPushButton::clicked, this, [this] { project_file(true); });
+    connect(open_, &QPushButton::clicked, this, [this] { project_file(false); });
     connect(cancel_, &QPushButton::clicked, this, [this] {
         if (cancelled_)
             cancelled_->store(true);
-        status_->setText(
-            QStringLiteral("Расчёт отменён. Это отмена исследования, а не закрытие виртуальных позиций."));
+        status_->setText(file_worker_->isRunning()
+                             ? QStringLiteral("Операция с файлом отменена. Уже завершённое сохранение не "
+                                              "удаляется; текущий портфель остаётся в памяти.")
+                             : QStringLiteral("Расчёт отменён. Это отмена исследования, а не закрытие "
+                                              "виртуальных позиций."));
     });
     connect(manual_metadata_, &QCheckBox::toggled, this, [this](bool on) {
         for (auto &r : rows_) {
@@ -216,6 +248,22 @@ PortfolioPanel::PortfolioPanel(QWidget *parent) : QWidget(parent) {
         }
         present(out);
     });
+    connect(file_worker_, &QFutureWatcher<PortfolioFileOutcome>::finished, this, [this] {
+        auto out = file_worker_->future().takeResult();
+        busy(false);
+        if (cancelled_ && cancelled_->load())
+            return;
+        if (!out.error.isEmpty()) {
+            status_->setText(out.error);
+            return;
+        }
+        if (out.saved) {
+            status_->setText(QStringLiteral("Портфель сохранён. Файл содержит свечи и виртуальный капитал; "
+                                            "очистка приложения не удаляет явно сохранённые файлы."));
+        } else {
+            apply_project(std::move(out.project));
+        }
+    });
     busy(false);
 }
 PortfolioPanel::~PortfolioPanel() {
@@ -230,11 +278,14 @@ void PortfolioPanel::busy(bool on) {
     run_->setEnabled(!on && !input_.assets.empty());
     import_->setEnabled(!on);
     demo_->setEnabled(!on);
+    open_->setEnabled(!on);
+    save_->setEnabled(!on && !input_.assets.empty());
     equal_->setEnabled(!on && !rows_.empty());
     cancel_->setEnabled(on);
 }
+bool PortfolioPanel::working() const { return worker_->isRunning() || file_worker_->isRunning(); }
 void PortfolioPanel::invalidate() {
-    if (worker_->isRunning())
+    if (working())
         return;
     summary_->clear();
     equity_->clear();
@@ -267,10 +318,12 @@ void PortfolioPanel::clear_private_state() {
     drawdown_->setValue(20);
     daily_->setValue(5);
     period_->setValue(20);
+    fast_->setValue(10);
+    slow_->setValue(30);
     manual_stop_->setValue(0);
     manual_metadata_->setChecked(false);
     status_->clear();
-    if (!worker_->isRunning())
+    if (!working())
         busy(false);
 }
 void PortfolioPanel::set_input(PortfolioInput input) {
@@ -280,14 +333,12 @@ void PortfolioPanel::set_input(PortfolioInput input) {
     rows_.clear();
     assets_->setRowCount(0);
     manual_metadata_->setChecked(false);
-    source_->setText(
-        input_.source +
-        QStringLiteral(
-            " • независимая копия данных; последующие изменения исследования не меняют этот набор. ") +
-        (input_.synthetic
-             ? QStringLiteral("Лоты/шаги — учебные допущения.")
-             : QStringLiteral(
-                   "Лоты/шаги из каталога или ручного ввода; исторические изменения не восстановлены.")));
+    source_->setText(input_.source +
+                     QStringLiteral(" • независимая копия данных; последующие изменения "
+                                    "исследования не меняют этот набор. ") +
+                     (input_.synthetic ? QStringLiteral("Лоты/шаги — учебные допущения.")
+                                       : QStringLiteral("Лоты/шаги из каталога или ручного ввода; "
+                                                        "исторические изменения не восстановлены.")));
 
     for (const auto &a : input_.assets) {
         const int i = assets_->rowCount();
@@ -358,7 +409,7 @@ void PortfolioPanel::set_input(PortfolioInput input) {
         height += assets_->rowHeight(i);
     assets_->setMinimumHeight(std::max(160, height));
     invalidate();
-    if (!worker_->isRunning())
+    if (!working())
         busy(false);
 }
 void PortfolioPanel::equal_weights() {
@@ -396,10 +447,12 @@ void PortfolioPanel::demo() {
     }
     set_input(std::move(input));
 }
-void PortfolioPanel::calculate() {
-    if (worker_->isRunning() || input_.assets.empty())
-        return;
-    quant::PortfolioConfig c;
+PortfolioProject PortfolioPanel::project() const {
+    PortfolioProject p;
+    p.input = input_;
+    p.fast = fast_->value();
+    p.slow = slow_->value();
+    auto &c = p.config;
     c.initial_cash = capital_->value();
     c.rebalance_every = period_->value();
     c.max_invested = invested_->value() / 100;
@@ -412,6 +465,102 @@ void PortfolioPanel::calculate() {
     c.max_drawdown = drawdown_->value() / 100;
     c.daily_loss = daily_->value() / 100;
     c.manual_stop_after = manual_stop_->value();
+    for (std::size_t i = 0; i < rows_.size(); ++i) {
+        const auto &r = rows_[i];
+        auto &a = p.input.assets[i];
+        a.weight = r.weight->value() / 100;
+        a.lot = r.lot->value();
+        a.tick_size = r.tick->value();
+        a.group = r.group->text().toStdString();
+        p.enabled.push_back(r.enabled->isChecked());
+        p.modes.push_back(r.rules->currentIndex());
+    }
+    return p;
+}
+void PortfolioPanel::apply_project(PortfolioProject p) {
+    const auto original_source = p.input.source;
+    set_input(std::move(p.input));
+    // Keep the original bounded source in the next export, without accumulating
+    // file prefixes.
+    source_->setText(QStringLiteral("Локальный файл • происхождение не проверено. ") +
+                     (input_.synthetic ? QStringLiteral("ДЕМО заявлено автором файла. ") : QString()) +
+                     original_source);
+    const auto &c = p.config;
+    capital_->setValue(c.initial_cash);
+    period_->setValue(c.rebalance_every);
+    invested_->setValue(c.max_invested * 100);
+    weight_limit_->setValue(c.max_weight * 100);
+    group_limit_->setValue(c.group_limit * 100);
+    commission_->setValue(c.commission_rate * 100);
+    fixed_->setValue(c.fixed_fee);
+    spread_->setValue(c.spread_bps);
+    slippage_->setValue(c.slippage_bps);
+    drawdown_->setValue(c.max_drawdown * 100);
+    daily_->setValue(c.daily_loss * 100);
+    manual_stop_->setValue(c.manual_stop_after);
+    fast_->setValue(p.fast);
+    slow_->setValue(p.slow);
+    for (std::size_t i = 0; i < rows_.size(); ++i) {
+        const auto &a = input_.assets[i];
+        auto &r = rows_[i];
+        r.enabled->setChecked(p.enabled[i]);
+        r.weight->setValue(a.weight * 100);
+        r.lot->setValue(static_cast<int>(a.lot));
+        r.tick->setValue(a.tick_size);
+        r.group->setText(QString::fromStdString(a.group));
+        r.rules->setCurrentIndex(p.modes[i]);
+        if (!input_.synthetic)
+            input_.assets[i].tick_size = 0; // force fresh explicit metadata confirmation
+    }
+    manual_metadata_->setChecked(false);
+    invalidate();
+    status_->setText(QStringLiteral("Проект открыт без сети. Результаты не загружались: нажмите «Рассчитать "
+                                    "портфель». Для рыночных свечей заново проверьте и подтвердите "
+                                    "лоты/шаги. "
+                                    "Сохранённые файлы не являются непрерывным виртуальным счётом."));
+}
+void PortfolioPanel::project_file(bool save, QString path) {
+    if (working() || (save && input_.assets.empty()))
+        return;
+    if (path.isEmpty()) {
+        QFileDialog dialog(this,
+                           save ? QStringLiteral("Сохранить цены, капитал и настройки")
+                                : QStringLiteral("Открыть локальный портфель"),
+                           {}, QStringLiteral("Портфель Quant (*.qpp.json)"));
+        dialog.setAcceptMode(save ? QFileDialog::AcceptSave : QFileDialog::AcceptOpen);
+        dialog.setFileMode(save ? QFileDialog::AnyFile : QFileDialog::ExistingFile);
+        dialog.setDefaultSuffix(QStringLiteral("qpp.json"));
+        if (dialog.exec() != QDialog::Accepted || dialog.selectedFiles().isEmpty())
+            return;
+        path = dialog.selectedFiles().front();
+    }
+    auto p = save ? project() : PortfolioProject{};
+    cancelled_ = std::make_shared<std::atomic<bool>>(false);
+    const auto flag = cancelled_;
+    busy(true);
+    status_->setText(save ? QStringLiteral("Сохраняем портфель в выбранный файл…")
+                          : QStringLiteral("Проверяем локальный файл (не более 16 МиБ)…"));
+    file_worker_->setFuture(QtConcurrent::run([save, path, p = std::move(p), flag]() mutable {
+        PortfolioFileOutcome out;
+        try {
+            if (save) {
+                write_portfolio_project(path, p, *flag);
+                out.saved = true;
+            } else {
+                out.project = read_portfolio_project(path, *flag);
+            }
+        } catch (const std::exception &) {
+            out.error = QStringLiteral("Файл не сохранён или не открыт. Проверьте доступ к папке, формат "
+                                       "и версию .qpp.json, контрольную сумму, даты/МСК и лимиты: 16 МиБ, "
+                                       "6 инструментов по 5000 свечей. Текущий портфель сохранён в памяти.");
+        }
+        return out;
+    }));
+}
+void PortfolioPanel::calculate() {
+    if (working() || input_.assets.empty())
+        return;
+    const auto c = project().config;
     std::vector<quant::PortfolioAsset> selected;
     double sum = 0;
     std::map<std::string, double> groups;
@@ -420,6 +569,7 @@ void PortfolioPanel::calculate() {
         if (!r.enabled->isChecked())
             continue;
         auto a = input_.assets[i];
+        a.strategy = quant::Strategy{}; // only visible portfolio templates define the model
         a.weight = r.weight->value() / 100;
         a.lot = r.lot->value();
         a.tick_size = r.tick->value();
@@ -453,14 +603,15 @@ void PortfolioPanel::calculate() {
         sum += a.weight;
         groups[a.group] += a.weight;
         if (a.weight > c.max_weight + 1e-12 || a.bars.size() < 2 || (c.group_limit > 0 && a.group.empty())) {
-            status_->setText(QStringLiteral(
-                "Проверьте вес акции, минимум две свечи и названия групп при включённом лимите."));
+            status_->setText(QStringLiteral("Проверьте вес акции, минимум две свечи и названия "
+                                            "групп при включённом лимите."));
             return;
         }
         if (!input_.synthetic &&
             ((input_.assets[i].tick_size <= 0 && !manual_metadata_->isChecked()) || a.tick_size <= 0)) {
             status_->setText(
-                QStringLiteral("Для рыночных данных нужны подтверждённые лоты и положительные шаги цены. При "
+                QStringLiteral("Для рыночных данных нужны подтверждённые лоты и положительные шаги "
+                               "цены. При "
                                "отсутствии каталога заполните их и включите ручную проверку."));
             return;
         }
@@ -468,7 +619,8 @@ void PortfolioPanel::calculate() {
     }
     if (selected.empty() || sum <= 0 || sum > c.max_invested + 1e-12) {
         status_->setText(
-            QStringLiteral("Выберите акции; сумма долей должна быть положительной и не превышать вложенный "
+            QStringLiteral("Выберите акции; сумма долей должна быть положительной и не превышать "
+                           "вложенный "
                            "лимит, fast < slow. Есть кнопка равного распределения."));
         return;
     }
@@ -480,7 +632,7 @@ void PortfolioPanel::calculate() {
             }
     cancelled_ = std::make_shared<std::atomic<bool>>(false);
     const auto flag = cancelled_;
-    const auto source = input_.source;
+    const auto source = source_->text();
     busy(true);
     status_->setText(QStringLiteral("Согласуем общие интервалы и считаем единый счёт в фоне…"));
     worker_->setFuture(QtConcurrent::run([selected = std::move(selected), c, flag, source]() mutable {
@@ -490,9 +642,9 @@ void PortfolioPanel::calculate() {
             out.result = quant::portfolio_backtest(selected, c, flag.get());
             out.baseline = quant::portfolio_baseline(std::move(selected), c, flag.get());
         } catch (const std::exception &) {
-            out.error =
-                QStringLiteral("Расчёт не выполнен. Проверьте лоты, шаги, пределы издержек и наличие хотя бы "
-                               "двух точных общих интервалов. Отсутствующие свечи не заполняются.");
+            out.error = QStringLiteral("Расчёт не выполнен. Проверьте лоты, шаги, пределы издержек и "
+                                       "наличие хотя бы "
+                                       "двух точных общих интервалов. Отсутствующие свечи не заполняются.");
         }
         return out;
     }));
@@ -518,26 +670,31 @@ void PortfolioPanel::present(const PortfolioOutcome &out) {
     }
     const auto from = QDateTime::fromMSecsSinceEpoch(r.start_time).toUTC().toString(Qt::ISODate),
                till = QDateTime::fromMSecsSinceEpoch(r.times.back()).toUTC().toString(Qt::ISODate);
-    summary_->setText(
-        QStringLiteral("%1\nОбщих свечей: %2 • UTC %3 — %4\nКапитал: %5 ₽ • деньги: %6 ₽ • результат по "
-                       "ценам без дивидендов: %7% • "
-                       "просадка: %8%\nКомиссии: %9 ₽ • модельный спред/проскальзывание/округление: %10 ₽ • "
-                       "исполнений: %11 • оборот/начальный капитал: %12\nСумма вкладов: %13 ₽ • база равных "
-                       "долей: %14%\nОстановка: %15 • открытых позиций на конце: %16\nИсключено вне общих "
-                       "интервалов: %17 • не сохранено событий сверх лимита: %18\nНеполный прогрев или "
-                       "выключены условия: %19\nМодель: индикаторы по общим наблюдениям; объём/очередь "
-                       "торгов, налоги и дивиденды не моделируются.")
-            .arg(out.source)
-            .arg(r.common_bars)
-            .arg(from, till, n(r.equity.back()), n(r.cash), n(r.total_return * 100), n(r.max_drawdown * 100),
-                 n(r.fees), n(r.execution_cost))
-            .arg(r.fills)
-            .arg(n(r.turnover), n(contribution), n(out.baseline.total_return * 100),
-                 r.halted ? reason(r.halt_reason) : QStringLiteral("нет"))
-            .arg(open)
-            .arg(removed.isEmpty() ? QStringLiteral("нет") : removed.join("; "))
-            .arg(r.dropped_events)
-            .arg(cold.isEmpty() ? QStringLiteral("нет") : cold.join("; ")));
+    summary_->setText(QStringLiteral("%1\nОбщих свечей: %2 • UTC %3 — %4\nКапитал: %5 ₽ • "
+                                     "деньги: %6 ₽ • результат по "
+                                     "ценам без дивидендов: %7% • "
+                                     "просадка: %8%\nКомиссии: %9 ₽ • модельный "
+                                     "спред/проскальзывание/округление: %10 ₽ • "
+                                     "исполнений: %11 • оборот/начальный капитал: %12\nСумма "
+                                     "вкладов: %13 ₽ • база равных "
+                                     "долей: %14%\nОстановка: %15 • открытых позиций на конце: "
+                                     "%16\nИсключено вне общих "
+                                     "интервалов: %17 • не сохранено событий сверх лимита: "
+                                     "%18\nНеполный прогрев или "
+                                     "выключены условия: %19\nМодель: индикаторы по общим "
+                                     "наблюдениям; объём/очередь "
+                                     "торгов, налоги и дивиденды не моделируются.")
+                          .arg(out.source)
+                          .arg(r.common_bars)
+                          .arg(from, till, n(r.equity.back()), n(r.cash), n(r.total_return * 100),
+                               n(r.max_drawdown * 100), n(r.fees), n(r.execution_cost))
+                          .arg(r.fills)
+                          .arg(n(r.turnover), n(contribution), n(out.baseline.total_return * 100),
+                               r.halted ? reason(r.halt_reason) : QStringLiteral("нет"))
+                          .arg(open)
+                          .arg(removed.isEmpty() ? QStringLiteral("нет") : removed.join("; "))
+                          .arg(r.dropped_events)
+                          .arg(cold.isEmpty() ? QStringLiteral("нет") : cold.join("; ")));
     equity_->set_lines({line(r.equity, QStringLiteral("Портфель"), QColor("#39d2b0")),
                         line(out.baseline.equity, QStringLiteral("База равных долей"), QColor("#efc571")),
                         line(std::vector<double>(r.equity.size(), r.equity.front()),
@@ -588,6 +745,68 @@ bool PortfolioPanel::self_test() {
     capital_->setValue(120000);
     if (!summary_->text().isEmpty())
         return false;
+    QTemporaryDir dir;
+    if (!dir.isValid())
+        return false;
+    const auto path = dir.filePath(QStringLiteral("portfolio.qpp.json"));
+    auto wait_file = [this] {
+        QEventLoop loop;
+        const auto c =
+            connect(file_worker_, &QFutureWatcher<PortfolioFileOutcome>::finished, &loop, &QEventLoop::quit);
+        QTimer::singleShot(10000, &loop, &QEventLoop::quit);
+        loop.exec();
+        disconnect(c);
+        return !file_worker_->isRunning();
+    };
+    rows_[1].enabled->setChecked(false);
+    rows_[0].group->setText(QStringLiteral("Учебная группа"));
+    rows_[0].rules->setCurrentIndex(4);
+    fast_->setValue(7);
+    slow_->setValue(21);
+    std::atomic<bool> check_cancel{false};
+    const auto saved = encode_portfolio_project(project(), check_cancel);
+    auto values = [this] {
+        QStringList result;
+        for (int row = 0; row < positions_->rowCount(); ++row)
+            for (int col = 0; col < positions_->columnCount(); ++col)
+                result.push_back(positions_->item(row, col)->text());
+        return result;
+    };
+    run_->click();
+    if (!wait() || positions_->rowCount() != 2)
+        return false;
+    const auto reference = values();
+    project_file(true, path);
+    if (run_->isEnabled() || open_->isEnabled() || !wait_file() ||
+        !status_->text().contains(QStringLiteral("сохранён")))
+        return false;
+    clear_private_state();
+    project_file(false, path);
+    if (!wait_file() || encode_portfolio_project(project(), check_cancel) != saved ||
+        !summary_->text().isEmpty() || manual_metadata_->isChecked())
+        return false;
+    run_->click();
+    if (!wait() || values() != reference)
+        return false;
+    project_file(false, dir.filePath(QStringLiteral("absent")));
+    if (!wait_file() || encode_portfolio_project(project(), check_cancel) != saved)
+        return false;
+    project_file(false, path);
+    clear_private_state();
+    if (!wait_file() || !input_.assets.empty() || assets_->rowCount() != 0)
+        return false;
+    project_file(false, path);
+    if (!wait_file())
+        return false;
+    // A local market-data file must not inherit catalog trust or metadata
+    // consent.
+    auto market = project();
+    market.input.synthetic = false;
+    apply_project(market);
+    run_->click();
+    if (worker_->isRunning() || manual_metadata_->isChecked() || !summary_->text().isEmpty())
+        return false;
+    demo();
     rows_[0].rules->setCurrentIndex(1);
     run_->click();
     cancel_->click();
