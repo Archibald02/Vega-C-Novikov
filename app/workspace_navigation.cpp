@@ -56,9 +56,13 @@ QWidget *MainWindow::home_panel() {
              tabs_->setCurrentIndex(7);
              lab_->show_demo();
          });
-    layout->addWidget(ui::paragraph(
-        QStringLiteral("Ctrl+1 — начало   •   Ctrl+2 — котировки   •   Ctrl+3 — исследование\nПроекты и "
-                       "отчёты сохраняются только по вашему действию. Токены не записываются на диск.")));
+    layout->addWidget(ui::paragraph(QStringLiteral(
+        "Ctrl+1 — начало   •   Ctrl+2 — котировки   •   Ctrl+3 — исследование • Ctrl+4 — задания\nПроекты и "
+        "отчёты сохраняются только по вашему действию. Токены не записываются на диск.")));
+    auto *lessons =
+        new QPushButton(QStringLiteral("Понять комиссии, риск и подбор параметров — учебные задания"));
+    connect(lessons, &QPushButton::clicked, this, [this] { tabs_->setCurrentIndex(9); });
+    layout->addWidget(lessons, 0, Qt::AlignLeft);
     layout->addStretch();
     return page;
 }
@@ -72,6 +76,7 @@ void MainWindow::update_workspace() {
     home_nav_->setChecked(index == 8);
     quotes_nav_->setChecked(market);
     lab_nav_->setChecked(index == 7);
+    learning_nav_->setChecked(index == 9);
     const QStringList names{
         QStringLiteral("Котировки • график текущих обновлений"),
         QStringLiteral("Котировки • учебный прогноз"),
@@ -81,7 +86,8 @@ void MainWindow::update_workspace() {
         QStringLiteral("Свечи MOEX • загрузка отдельно от потока котировок"),
         QStringLiteral("Котировки • сравнение акций"),
         QStringLiteral("Исследование • отдельный набор закрытых свечей, только виртуальные сделки"),
-        QStringLiteral("Начало • выберите задачу")};
+        QStringLiteral("Начало • выберите задачу"),
+        QStringLiteral("Учебные задания • автономные синтетические примеры")};
     workspace_context_->setText(names.value(index));
 }
 } // namespace live

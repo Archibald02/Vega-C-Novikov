@@ -91,6 +91,10 @@ MainWindow::MainWindow(bool test_mode) : test_mode_(test_mode) {
         b->setCheckable(true);
         navigation->addWidget(b);
     }
+    learning_nav_ = new QPushButton(QStringLiteral("Учебные задания"));
+    learning_nav_->setCheckable(true);
+    navigation->addWidget(learning_nav_);
+    connect(learning_nav_, &QPushButton::clicked, this, [this] { tabs_->setCurrentIndex(9); });
     auto *quote_menu = new QMenu(quotes_nav_);
     const QList<QPair<QString, int>> destinations{{QStringLiteral("График текущих цен"), 0},
                                                   {QStringLiteral("Свечи с биржи"), 5},
@@ -280,6 +284,12 @@ MainWindow::MainWindow(bool test_mode) : test_mode_(test_mode) {
     home_scroll->setWidgetResizable(true);
     home_scroll->setWidget(home_panel());
     tabs_->addTab(home_scroll, QStringLiteral("Начало"));
+    learning_ = new LearningPanel;
+    auto *learning_scroll = new QScrollArea;
+    learning_scroll->setFrameShape(QFrame::NoFrame);
+    learning_scroll->setWidgetResizable(true);
+    learning_scroll->setWidget(learning_);
+    tabs_->addTab(learning_scroll, QStringLiteral("Учебные задания"));
     tabs_->tabBar()->hide();
     tabs_->setCurrentIndex(8);
     tabs_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
@@ -297,6 +307,8 @@ MainWindow::MainWindow(bool test_mode) : test_mode_(test_mode) {
     connect(quote_key, &QShortcut::activated, this, [this] { tabs_->setCurrentIndex(0); });
     auto *lab_key = new QShortcut(QKeySequence("Ctrl+3"), this);
     connect(lab_key, &QShortcut::activated, this, [this] { tabs_->setCurrentIndex(7); });
+    auto *learning_key = new QShortcut(QKeySequence("Ctrl+4"), this);
+    connect(learning_key, &QShortcut::activated, this, [this] { tabs_->setCurrentIndex(9); });
     split->addWidget(table_);
     split->addWidget(tabs_);
     split->setStretchFactor(0, 1);
@@ -1075,6 +1087,8 @@ void MainWindow::stop_for_test() {
 }
 bool MainWindow::exercise_tools_test() {
     stop_for_test();
+    if (!learning_->self_test())
+        return false;
     if (rows_.empty())
         return false;
     chart_->set_series(nullptr, "", "", 0);
