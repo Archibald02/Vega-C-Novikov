@@ -40,9 +40,7 @@ bool ready(const RuleGroup &g, const Features &previous, const Features &current
         }
     return any && result;
 }
-} // namespace
-PortfolioResult portfolio_backtest(std::vector<PortfolioAsset> assets, const PortfolioConfig &c,
-                                   const std::atomic<bool> *cancel) {
+void validate_inputs(std::vector<PortfolioAsset> &assets, const PortfolioConfig &c) {
     require(!assets.empty() && assets.size() <= 6);
     for (double x : {c.initial_cash, c.commission_rate, c.fixed_fee, c.spread_bps, c.slippage_bps,
                      c.max_weight, c.max_invested, c.group_limit, c.max_drawdown, c.daily_loss})
@@ -64,7 +62,7 @@ PortfolioResult portfolio_backtest(std::vector<PortfolioAsset> assets, const Por
                 std::isfinite(a.tick_size) && a.tick_size >= 0 && a.tick_size <= 1e9 &&
                 (a.tick_size == 0 || a.tick_size >= 1e-9) && a.lot >= 1 && a.lot <= 1000000);
         require(!c.group_limit || !a.group.empty());
-        quant::validate_bars(a.bars);
+
         require(a.strategy.fast >= 2 && a.strategy.fast < a.strategy.slow && a.strategy.slow <= 500 &&
                 a.strategy.indicator_window >= 2 && a.strategy.indicator_window <= 500);
         SimConfig validate;
@@ -77,59 +75,99 @@ PortfolioResult portfolio_backtest(std::vector<PortfolioAsset> assets, const Por
     if (c.group_limit)
         for (const auto &g : group_weights)
             require(g.second <= c.group_limit + 1e-12);
-    using Key = std::pair<std::int64_t, std::int64_t>;
-    std::vector<std::map<Key, std::size_t>> indices(assets.size());
-    for (std::size_t j = 0; j < assets.size(); ++j)
-        for (std::size_t i = 0; i < assets[j].bars.size(); ++i)
-            indices[j][{assets[j].bars[i].time, assets[j].bars[i].end}] = i;
-    std::vector<Key> common;
-    for (const auto &pair : indices[0]) {
-        bool all = true;
-        for (std::size_t j = 1; j < assets.size(); ++j)
-            all &= indices[j].count(pair.first) > 0;
-        if (all)
-            common.push_back(pair.first);
+}
+} // namespace
+PortfolioSchedule portfolio_schedule(std::vector<PortfolioAsset> assets) {
+    require(!assets.empty() && assets.size() <= 6);
+    std::sort(assets.begin(), assets.end(), [](const auto &a, const auto &b) { return a.symbol < b.symbol; });
+    for (std::size_t j = 0; j < assets.size(); ++j) {
+        require(!assets[j].symbol.empty() && (!j || assets[j].symbol != assets[j - 1].symbol));
+        validate_bars(assets[j].bars);
     }
-    require(common.size() >= 2);
+    PortfolioSchedule s;
+    std::vector<std::size_t> index(assets.size());
+    for (const auto &first : assets[0].bars) {
+        std::vector<Bar> frame{first};
+        for (std::size_t j = 1; j < assets.size(); ++j) {
+            const auto &bars = assets[j].bars;
+            while (index[j] < bars.size() && bars[index[j]].time < first.time)
+                ++index[j];
+            if (index[j] == bars.size() || bars[index[j]].time != first.time ||
+                bars[index[j]].end != first.end)
+                break;
+            frame.push_back(bars[index[j]]);
+        }
+        if (frame.size() == assets.size()) {
+            for (const auto &b : frame)
+                require(b.utc_offset_seconds == first.utc_offset_seconds);
+            s.frames.push_back(std::move(frame));
+        }
+    }
+    require(s.frames.size() >= 2);
+    for (const auto &a : assets)
+        s.excluded.push_back(a.bars.size() - s.frames.size());
+    return s;
+}
+struct PortfolioAccount::State {
+    std::vector<PortfolioAsset> assets;
+    PortfolioConfig c;
     PortfolioResult r;
-    r.cash = c.initial_cash;
-    r.common_bars = common.size();
-    r.start_time = common.front().first;
-    r.equity.push_back(r.cash);
-    r.drawdowns.push_back(0);
-    for (const auto &a : assets) {
-        r.excluded.push_back(a.bars.size() - common.size());
-        r.positions.push_back({a.symbol});
-    }
     std::vector<CandleFeatures> features;
-    std::vector<Features> prev(assets.size()), current(assets.size());
+    std::vector<Features> prev, current;
     std::vector<bool> active;
-    for (const auto &a : assets) {
-        features.emplace_back(a.strategy.fast, a.strategy.slow, a.strategy.indicator_window);
-        active.push_back(!a.use_rules || a.strategy.buy_hold);
+    std::vector<std::int64_t> target;
+    bool pending = false, armed = false;
+    double peak = 0, session_base = 0, traded = 0;
+    std::int64_t session = -1, last_end = 0;
+    std::size_t warmed = 0;
+    std::vector<Bar> last_warmup;
+    State(std::vector<PortfolioAsset> input, const PortfolioConfig &config)
+        : assets(std::move(input)), c(config) {
+        validate_inputs(assets, c);
+        r.cash = peak = session_base = c.initial_cash;
+        r.equity.push_back(r.cash);
+        r.drawdowns.push_back(0);
+        for (auto &a : assets) {
+            a.bars.clear();
+            a.bars.shrink_to_fit();
+            r.positions.push_back({a.symbol});
+            features.emplace_back(a.strategy.fast, a.strategy.slow, a.strategy.indicator_window);
+            active.push_back(!a.use_rules || a.strategy.buy_hold);
+        }
+        prev.resize(assets.size());
+        current.resize(assets.size());
+        target.resize(assets.size());
+        for (auto &p : current)
+            p.fill(unavailable());
     }
-    for (auto &p : current)
-        p.fill(unavailable());
-    std::vector<std::int64_t> target(assets.size());
-    bool pending = false;
-    double peak = c.initial_cash, session_base = c.initial_cash, traded = 0;
-    std::int64_t session = -1;
-    const double bps = c.spread_bps / 2 + c.slippage_bps;
-    auto log = [&](std::int64_t t, const std::string &symbol, std::int64_t q, double p, double fee,
-                   const std::string &why) {
+    void validate_frame(const std::vector<Bar> &bars) const {
+        require(bars.size() == assets.size());
+        for (const auto &b : bars) {
+            validate_bars({b});
+            require(b.time >= last_end && b.time == bars[0].time && b.end == bars[0].end &&
+                    b.utc_offset_seconds == bars[0].utc_offset_seconds);
+        }
+    }
+    void log(std::int64_t t, const std::string &symbol, std::int64_t q, double p, double fee,
+             const std::string &why) {
         if (r.journal.size() < 10000)
             r.journal.push_back({t, q, symbol, why, p, fee, r.cash});
         else
             ++r.dropped_events;
-    };
-    for (std::size_t i = 0; i < common.size(); ++i) {
-        if (cancel && cancel->load())
-            throw std::runtime_error("Portfolio cancelled");
-        std::vector<Bar> bars;
+    }
+    void plan(const std::vector<Bar> &bars, double equity) {
         for (std::size_t j = 0; j < assets.size(); ++j)
-            bars.push_back(assets[j].bars[indices[j].at(common[i])]);
-        for (const auto &b : bars)
-            require(b.utc_offset_seconds == bars[0].utc_offset_seconds);
+            target[j] =
+                r.halted || !active[j] ? 0 : lots(equity * assets[j].weight / bars[j].close, assets[j].lot);
+        pending = true;
+    }
+    void step(const std::vector<Bar> &bars) {
+        require(r.common_bars < 5000 && (!warmed || armed));
+        validate_frame(bars);
+        const auto i = r.common_bars;
+        if (!i && !warmed)
+            r.start_time = bars[0].time;
+        const double bps = c.spread_bps / 2 + c.slippage_bps;
         const auto date = (bars[0].time + bars[0].utc_offset_seconds * 1000LL) / 86400000LL;
         if (date != session) {
             session = date;
@@ -250,17 +288,64 @@ PortfolioResult portfolio_backtest(std::vector<PortfolioAsset> assets, const Por
                 changed |= old != active[j];
             }
         const bool periodic =
-            i == 0 || (c.rebalance_every && i % static_cast<std::size_t>(c.rebalance_every) == 0);
+            (!warmed && i == 0) ||
+            (c.rebalance_every && (i + (warmed ? 1 : 0)) % static_cast<std::size_t>(c.rebalance_every) == 0);
         if (r.halted || periodic || changed) {
-            for (std::size_t j = 0; j < assets.size(); ++j)
-                target[j] = r.halted || !active[j]
-                                ? 0
-                                : lots(equity * assets[j].weight / bars[j].close, assets[j].lot);
-            pending = true;
+            plan(bars, equity);
             if (!r.halted)
                 log(bars[0].end, "", 0, 0, 0, "TARGET_NEXT_OPEN");
         }
+        last_end = bars[0].end;
+        ++r.common_bars;
+        r.total_return = r.equity.back() / c.initial_cash - 1;
+        r.turnover = traded / c.initial_cash;
     }
+};
+PortfolioAccount::PortfolioAccount(std::vector<PortfolioAsset> assets, const PortfolioConfig &c)
+    : state_(std::make_unique<State>(std::move(assets), c)) {}
+PortfolioAccount::~PortfolioAccount() = default;
+PortfolioAccount::PortfolioAccount(PortfolioAccount &&) noexcept = default;
+PortfolioAccount &PortfolioAccount::operator=(PortfolioAccount &&) noexcept = default;
+void PortfolioAccount::step(const std::vector<Bar> &frame) { state_->step(frame); }
+void PortfolioAccount::warmup(const std::vector<Bar> &frame) {
+    auto &s = *state_;
+    require(!s.armed && !s.r.common_bars && !s.r.halted && s.warmed < 5000);
+    s.validate_frame(frame);
+    for (std::size_t j = 0; j < s.assets.size(); ++j) {
+        s.prev[j] = s.current[j];
+        s.current[j] = s.features[j].push(frame[j]);
+    }
+    s.last_warmup = frame;
+    s.last_end = frame[0].end;
+    ++s.warmed;
+}
+void PortfolioAccount::arm_from_warmup() {
+    auto &s = *state_;
+    require(s.warmed && !s.armed && !s.r.halted);
+    for (std::size_t j = 0; j < s.assets.size(); ++j)
+        if (s.assets[j].use_rules && !s.assets[j].strategy.buy_hold)
+            s.active[j] = evaluate(s.assets[j].strategy.entry, s.prev[j], s.current[j]);
+    s.plan(s.last_warmup, s.c.initial_cash);
+    s.r.start_time = s.last_end;
+    s.log(s.last_end, "", 0, 0, 0, "TARGET_NEXT_OPEN");
+    s.armed = true;
+}
+void PortfolioAccount::request_stop() {
+    auto &s = *state_;
+    if (s.r.halted)
+        return;
+    s.r.halted = true;
+    s.r.halt_reason = "MANUAL_STOP";
+    std::fill(s.target.begin(), s.target.end(), 0);
+    s.pending = true;
+    s.log(s.last_end, "", 0, 0, 0, s.r.halt_reason);
+}
+bool PortfolioAccount::halted() const { return state_->r.halted; }
+PortfolioResult PortfolioAccount::result() const {
+    auto r = state_->r;
+    const auto &assets = state_->assets;
+    const auto &prev = state_->prev;
+    const auto &current = state_->current;
     for (std::size_t j = 0; j < r.positions.size(); ++j) {
         auto &p = r.positions[j];
         p.pnl += p.value;
@@ -268,12 +353,24 @@ PortfolioResult portfolio_backtest(std::vector<PortfolioAsset> assets, const Por
                         (ready(assets[j].strategy.entry, prev[j], current[j]) &&
                          ready(assets[j].strategy.exit, prev[j], current[j]));
     }
-    r.total_return = r.equity.back() / c.initial_cash - 1;
-    r.turnover = traded / c.initial_cash;
     return r;
 }
-PortfolioResult portfolio_baseline(std::vector<PortfolioAsset> assets, PortfolioConfig c,
+PortfolioResult portfolio_backtest(std::vector<PortfolioAsset> assets, const PortfolioConfig &c,
                                    const std::atomic<bool> *cancel) {
+    if (cancel && cancel->load())
+        throw std::runtime_error("Portfolio cancelled");
+    auto schedule = portfolio_schedule(assets);
+    PortfolioAccount account(std::move(assets), c);
+    for (const auto &frame : schedule.frames) {
+        if (cancel && cancel->load())
+            throw std::runtime_error("Portfolio cancelled");
+        account.step(frame);
+    }
+    auto r = account.result();
+    r.excluded = std::move(schedule.excluded);
+    return r;
+}
+PortfolioAccount portfolio_baseline_account(std::vector<PortfolioAsset> assets, PortfolioConfig c) {
     require(!assets.empty() && assets.size() <= 6);
     double total = 0;
     for (const auto &a : assets)
@@ -294,6 +391,21 @@ PortfolioResult portfolio_baseline(std::vector<PortfolioAsset> assets, Portfolio
     c.rebalance_every = 0;
     c.manual_stop_after = 0;
     c.max_drawdown = c.daily_loss = 1;
-    return portfolio_backtest(std::move(assets), c, cancel);
+    return PortfolioAccount(std::move(assets), c);
+}
+PortfolioResult portfolio_baseline(std::vector<PortfolioAsset> assets, PortfolioConfig c,
+                                   const std::atomic<bool> *cancel) {
+    if (cancel && cancel->load())
+        throw std::runtime_error("Portfolio cancelled");
+    auto schedule = portfolio_schedule(assets);
+    auto account = portfolio_baseline_account(std::move(assets), c);
+    for (const auto &frame : schedule.frames) {
+        if (cancel && cancel->load())
+            throw std::runtime_error("Portfolio cancelled");
+        account.step(frame);
+    }
+    auto r = account.result();
+    r.excluded = std::move(schedule.excluded);
+    return r;
 }
 } // namespace quant

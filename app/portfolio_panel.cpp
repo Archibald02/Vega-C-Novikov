@@ -3,6 +3,7 @@
 #include <QEventLoop>
 #include <QFileDialog>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QHeaderView>
 #include <QScrollArea>
 #include <QTemporaryDir>
@@ -151,6 +152,21 @@ PortfolioPanel::PortfolioPanel(QWidget *parent) : QWidget(parent) {
     run_row->addWidget(cancel_);
     run_row->addStretch();
     layout->addLayout(run_row);
+    auto *replay_actions = new QGridLayout;
+    replay_start_ = new QPushButton(QStringLiteral("Новый счёт по истории"));
+    replay_step_ = new QPushButton(QStringLiteral("Следующая свеча"));
+    replay_play_ = new QPushButton(QStringLiteral("Воспроизводить"));
+    replay_stop_ = new QPushButton(QStringLiteral("Аварийный стоп"));
+    replay_end_ = new QPushButton(QStringLiteral("Завершить сеанс"));
+    replay_actions->addWidget(replay_start_, 0, 0);
+    replay_actions->addWidget(replay_step_, 0, 1);
+    replay_actions->addWidget(replay_play_, 0, 2);
+    replay_actions->addWidget(replay_stop_, 1, 0);
+    replay_actions->addWidget(replay_end_, 1, 1);
+    layout->addLayout(replay_actions);
+    replay_status_ = ui::paragraph({});
+    replay_status_->setTextFormat(Qt::PlainText);
+    layout->addWidget(replay_status_);
     status_ = ui::paragraph({});
     summary_ = ui::paragraph({});
     summary_->setTextFormat(Qt::PlainText);
@@ -215,6 +231,19 @@ PortfolioPanel::PortfolioPanel(QWidget *parent) : QWidget(parent) {
     connect(demo_, &QPushButton::clicked, this, [this] { demo(); });
     connect(equal_, &QPushButton::clicked, this, [this] { equal_weights(); });
     connect(run_, &QPushButton::clicked, this, [this] { calculate(); });
+    connect(replay_start_, &QPushButton::clicked, this, [this] { calculate(true); });
+    connect(replay_step_, &QPushButton::clicked, this, [this] { replay_step(); });
+    connect(replay_stop_, &QPushButton::clicked, this, [this] { replay_stop(); });
+    connect(replay_end_, &QPushButton::clicked, this, [this] { replay_end(); });
+    replay_timer_.setInterval(700);
+    connect(&replay_timer_, &QTimer::timeout, this, [this] { replay_step(); });
+    connect(replay_play_, &QPushButton::clicked, this, [this] {
+        if (replay_timer_.isActive())
+            replay_timer_.stop();
+        else if (replay_ && replay_->index < replay_->schedule.frames.size())
+            replay_timer_.start();
+        replay_controls();
+    });
     connect(save_, &QPushButton::clicked, this, [this] { project_file(true); });
     connect(open_, &QPushButton::clicked, this, [this] { project_file(false); });
     connect(cancel_, &QPushButton::clicked, this, [this] {
@@ -246,6 +275,13 @@ PortfolioPanel::PortfolioPanel(QWidget *parent) : QWidget(parent) {
             status_->setText(out.error);
             return;
         }
+        if (out.replay) {
+            invalidate();
+            replay_ = std::move(out.replay);
+            busy(true);
+            replay_present();
+            return;
+        }
         present(out);
     });
     connect(file_worker_, &QFutureWatcher<PortfolioFileOutcome>::finished, this, [this] {
@@ -265,6 +301,7 @@ PortfolioPanel::PortfolioPanel(QWidget *parent) : QWidget(parent) {
         }
     });
     busy(false);
+    replay_controls();
 }
 PortfolioPanel::~PortfolioPanel() {
     if (cancelled_)
@@ -281,12 +318,14 @@ void PortfolioPanel::busy(bool on) {
     open_->setEnabled(!on);
     save_->setEnabled(!on && !input_.assets.empty());
     equal_->setEnabled(!on && !rows_.empty());
-    cancel_->setEnabled(on);
+    cancel_->setEnabled(on && !replay_);
+    replay_controls();
 }
-bool PortfolioPanel::working() const { return worker_->isRunning() || file_worker_->isRunning(); }
+bool PortfolioPanel::working() const { return worker_->isRunning() || file_worker_->isRunning() || replay_; }
 void PortfolioPanel::invalidate() {
     if (working())
         return;
+    replay_status_->clear();
     summary_->clear();
     equity_->clear();
     drawdowns_->clear();
@@ -297,6 +336,7 @@ void PortfolioPanel::invalidate() {
 void PortfolioPanel::clear_private_state() {
     if (cancelled_)
         cancelled_->store(true);
+    replay_end(false);
     input_ = {};
     rows_.clear();
     assets_->setRowCount(0);
@@ -327,6 +367,7 @@ void PortfolioPanel::clear_private_state() {
         busy(false);
 }
 void PortfolioPanel::set_input(PortfolioInput input) {
+    replay_end(false);
     if (cancelled_)
         cancelled_->store(true);
     input_ = std::move(input);
@@ -557,7 +598,7 @@ void PortfolioPanel::project_file(bool save, QString path) {
         return out;
     }));
 }
-void PortfolioPanel::calculate() {
+void PortfolioPanel::calculate(bool prepare_replay) {
     if (working() || input_.assets.empty())
         return;
     const auto c = project().config;
@@ -635,10 +676,23 @@ void PortfolioPanel::calculate() {
     const auto source = source_->text();
     busy(true);
     status_->setText(QStringLiteral("Согласуем общие интервалы и считаем единый счёт в фоне…"));
-    worker_->setFuture(QtConcurrent::run([selected = std::move(selected), c, flag, source]() mutable {
+    worker_->setFuture(QtConcurrent::run([selected = std::move(selected), c, flag, source,
+                                          prepare_replay]() mutable {
         PortfolioOutcome out;
         out.source = source;
         try {
+            if (prepare_replay) {
+                auto replay = std::make_shared<PortfolioReplay>();
+                replay->schedule = quant::portfolio_schedule(selected);
+                if (flag->load())
+                    return out;
+                replay->account = std::make_unique<quant::PortfolioAccount>(selected, c);
+                replay->baseline = std::make_unique<quant::PortfolioAccount>(
+                    quant::portfolio_baseline_account(std::move(selected), c));
+                replay->source = QStringLiteral("ПРОИГРЫВАНИЕ ИСТОРИИ • ") + source;
+                out.replay = std::move(replay);
+                return out;
+            }
             out.result = quant::portfolio_backtest(selected, c, flag.get());
             out.baseline = quant::portfolio_baseline(std::move(selected), c, flag.get());
         } catch (const std::exception &) {
@@ -711,20 +765,22 @@ void PortfolioPanel::present(const PortfolioOutcome &out) {
     const auto start = r.journal.size() > 500 ? r.journal.size() - 500 : 0;
     for (std::size_t i = start; i < r.journal.size(); ++i) {
         const auto &e = r.journal[i];
-        row(journal_, {QDateTime::fromMSecsSinceEpoch(e.time).toUTC().toString(Qt::ISODate),
+        row(journal_, {e.time ? QDateTime::fromMSecsSinceEpoch(e.time).toUTC().toString(Qt::ISODate)
+                              : QStringLiteral("До первой свечи"),
                        QString::fromStdString(e.symbol), QString::number(e.quantity),
                        e.price > 0 ? QString::number(e.price, 'g', 12) : QStringLiteral("—"), n(e.fee),
                        n(e.cash), reason(e.reason)});
     }
     status_->setText(QStringLiteral("Расчёт завершён. Общие деньги не дублируются между позициями. Издержки "
                                     "уже включены в капитал и вклады; не вычитайте их повторно."));
-    QTimer::singleShot(0, this, [this] {
-        for (auto *p = parentWidget(); p; p = p->parentWidget())
-            if (auto *scroll = qobject_cast<QScrollArea *>(p)) {
-                scroll->ensureWidgetVisible(summary_, 0, 20);
-                break;
-            }
-    });
+    if (!replay_)
+        QTimer::singleShot(0, this, [this] {
+            for (auto *p = parentWidget(); p; p = p->parentWidget())
+                if (auto *scroll = qobject_cast<QScrollArea *>(p)) {
+                    scroll->ensureWidgetVisible(summary_, 0, 20);
+                    break;
+                }
+        });
 }
 bool PortfolioPanel::self_test() {
     demo();
@@ -814,6 +870,53 @@ bool PortfolioPanel::self_test() {
         return false;
     clear_private_state();
     if (!input_.assets.empty() || assets_->rowCount() != 0 || positions_->rowCount() != 0)
+        return false;
+    demo();
+    run_->click();
+    if (!wait() || positions_->rowCount() != 3)
+        return false;
+    const auto batch_values = values();
+    replay_start_->click();
+    if (!wait() || !replay_ || replay_->index != 0 || capital_->isEnabled() || !summary_->text().isEmpty() ||
+        save_->isEnabled())
+        return false;
+    replay_step_->click();
+    replay_step_->click();
+    if (replay_->index != 2 || !replay_->account->result().fills)
+        return false;
+    replay_play_->click();
+    if (!replay_timer_.isActive() || replay_step_->isEnabled())
+        return false;
+    QEventLoop automatic;
+    QTimer::singleShot(800, &automatic, &QEventLoop::quit);
+    automatic.exec();
+    replay_play_->click();
+    if (replay_timer_.isActive() || replay_->index < 3 || !replay_step_->isEnabled())
+        return false;
+    replay_stop_->click();
+    if (!replay_->account->halted() || replay_stop_->isEnabled())
+        return false;
+    replay_step_->click();
+    for (const auto &position : replay_->account->result().positions)
+        if (position.units != 0)
+            return false;
+    replay_end_->click();
+    if (replay_ || replay_timer_.isActive() || !capital_->isEnabled())
+        return false;
+    replay_start_->click();
+    if (!wait() || !replay_)
+        return false;
+    // Run internal frames without thousands of table repaints in the self-test.
+    while (replay_->index + 1 < replay_->schedule.frames.size()) {
+        const auto &frame = replay_->schedule.frames[replay_->index++];
+        replay_->account->step(frame);
+        replay_->baseline->step(frame);
+    }
+    replay_step_->click();
+    if (values() != batch_values || replay_step_->isEnabled() || replay_play_->isEnabled())
+        return false;
+    clear_private_state();
+    if (replay_ || replay_timer_.isActive() || !input_.assets.empty() || positions_->rowCount())
         return false;
     demo();
     run_->click();

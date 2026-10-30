@@ -207,3 +207,132 @@ TEST_CASE("Portfolio cannot manufacture common observations") {
     }
     CHECK_THROWS(quant::portfolio_backtest({a, b}, plain()));
 }
+TEST_CASE("Portfolio incremental snapshots preserve the ledger and match each batch prefix") {
+    auto c = plain();
+    c.rebalance_every = 2;
+    c.commission_rate = .0005;
+    auto a = asset("A", .4, {100, 101, 95, 105, 99, 110});
+    auto b = asset("B", .4, {100, 99, 102, 98, 101, 100});
+    const auto schedule = quant::portfolio_schedule({b, a});
+    quant::PortfolioAccount account({b, a}, c);
+    CHECK(account.result().common_bars == 0);
+    CHECK(account.result().cash == 100000);
+    for (std::size_t i = 0; i < schedule.frames.size(); ++i) {
+        account.step(schedule.frames[i]);
+        const auto first = account.result(), second = account.result();
+        CHECK(first.equity == second.equity);
+        CHECK(first.positions[0].pnl == second.positions[0].pnl);
+        if (i == 0)
+            continue;
+        auto aa = a, bb = b;
+        aa.bars.resize(i + 1);
+        bb.bars.resize(i + 1);
+        const auto reference = quant::portfolio_backtest({aa, bb}, c);
+        CHECK(first.equity == reference.equity);
+        CHECK(first.drawdowns == reference.drawdowns);
+        CHECK(first.cash == reference.cash);
+        CHECK(first.positions[0].pnl == reference.positions[0].pnl);
+        CHECK(first.journal.size() == reference.journal.size());
+    }
+}
+TEST_CASE("Portfolio incremental rejects duplicate malformed unsynchronised and reversed frames atomically") {
+    auto a = asset("A", .5, {100, 100, 110}), b = asset("B", .5, {100, 100, 90});
+    auto s = quant::portfolio_schedule({a, b});
+    quant::PortfolioAccount account({a, b}, plain());
+    account.step(s.frames[0]);
+    const auto before = account.result();
+    CHECK_THROWS(account.step(s.frames[0]));
+    auto bad = s.frames[1];
+    bad[1].low = 1e6;
+    CHECK_THROWS(account.step(bad));
+    bad = s.frames[1];
+    ++bad[1].end;
+    CHECK_THROWS(account.step(bad));
+    bad = s.frames[1];
+    bad[1].utc_offset_seconds = 0;
+    CHECK_THROWS(account.step(bad));
+    CHECK_THROWS(account.step({s.frames[1][0]}));
+    CHECK(account.result().cash == before.cash);
+    CHECK(account.result().equity == before.equity);
+    CHECK(account.result().journal.size() == before.journal.size());
+    account.step(s.frames[1]);
+    CHECK(account.result().positions[0].units == 500);
+    CHECK(account.result().positions[1].units == 500);
+    CHECK_THROWS(account.step(s.frames[0]));
+}
+TEST_CASE("Portfolio manual emergency stop is permanent and exits at next common open") {
+    auto a = asset("A", .5, {100, 100, 80}), b = asset("B", .5, {100, 100, 90});
+    const auto s = quant::portfolio_schedule({a, b});
+    quant::PortfolioAccount account({a, b}, plain());
+    account.step(s.frames[0]);
+    account.step(s.frames[1]);
+    account.request_stop();
+    const auto stopped = account.result();
+    CHECK(stopped.halted);
+    CHECK(stopped.positions[0].units == 500);
+    account.request_stop();
+    CHECK(account.result().journal.size() == stopped.journal.size());
+    account.step(s.frames[2]);
+    const auto r = account.result();
+    CHECK(r.cash == doctest::Approx(85000));
+    CHECK(r.positions[0].units == 0);
+    CHECK(r.positions[1].units == 0);
+    CHECK(r.halt_reason == "MANUAL_STOP");
+    CHECK(r.journal.back().reason == "RISK_EXIT");
+    CHECK(r.total_return == doctest::Approx(-.15));
+    quant::PortfolioAccount early({a, b}, plain());
+    early.request_stop();
+    early.step(s.frames[0]);
+    early.step(s.frames[1]);
+    CHECK(early.result().fills == 0);
+}
+TEST_CASE("Portfolio warmup never opens historical positions or credits historical profits") {
+    auto a = asset("A", .5, {100, 200, 400, 500});
+    quant::PortfolioAccount account({a}, plain());
+    account.warmup({a.bars[0]});
+    account.warmup({a.bars[1]});
+    CHECK(account.result().common_bars == 0);
+    CHECK(account.result().fills == 0);
+    CHECK(account.result().equity.size() == 1);
+    CHECK(account.result().cash == 100000);
+    CHECK_THROWS(account.step({a.bars[2]}));
+    account.arm_from_warmup();
+    CHECK_THROWS(account.arm_from_warmup());
+    CHECK_THROWS(account.warmup({a.bars[2]}));
+    account.step({a.bars[2]});
+    auto r = account.result();
+    CHECK(r.positions[0].units == 250);
+    CHECK(r.equity.back() == 100000);
+    CHECK(r.total_return == 0);
+    CHECK(r.start_time == a.bars[1].end);
+    account.step({a.bars[3]});
+    CHECK(account.result().equity.back() == 125000);
+}
+TEST_CASE("Portfolio incremental baseline equals batch and stops at the bounded session cap") {
+    auto c = plain();
+    c.rebalance_every = 2;
+    auto a = asset("A", .7, {100, 105, 110}), b = asset("B", .2, {100, 99, 98});
+    auto account = quant::portfolio_baseline_account({b, a}, c);
+    for (const auto &frame : quant::portfolio_schedule({a, b}).frames)
+        account.step(frame);
+    CHECK(account.result().equity == quant::portfolio_baseline({a, b}, c).equity);
+    a = asset("A", .5, std::vector<double>(5000, 100));
+    quant::PortfolioAccount bounded({a}, c);
+    for (const auto &bar : a.bars)
+        bounded.step({bar});
+    auto extra = a.bars.back();
+    extra.time = extra.end;
+    extra.end += 86400000;
+    CHECK_THROWS(bounded.step({extra}));
+    CHECK(bounded.result().common_bars == 5000);
+    CHECK(bounded.result().equity.size() == 5001);
+    quant::PortfolioAccount warmed({a}, c);
+    for (const auto &bar : a.bars)
+        warmed.warmup({bar});
+    CHECK_THROWS(warmed.warmup({extra}));
+    CHECK(warmed.result().equity.size() == 1);
+    CHECK(warmed.result().fills == 0);
+    warmed.arm_from_warmup();
+    warmed.step({extra});
+    CHECK(warmed.result().common_bars == 1);
+}

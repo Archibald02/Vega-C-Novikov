@@ -22,7 +22,7 @@ if(BUILD_GUI)
   add_library(quote_parser app/quote_parser.cpp)
   target_include_directories(quote_parser PUBLIC app)
   target_link_libraries(quote_parser PUBLIC Qt6::Core)
-  add_library(live_widgets app/research_panel.cpp app/research_workbench.cpp app/research_experiments.cpp app/research_snapshot.cpp app/learning_panel.cpp app/portfolio_panel.cpp app/portfolio_project.cpp app/research_journey.cpp app/research_panel.hpp app/json_http.cpp app/market_history.cpp app/market_history.hpp app/visual_chart.cpp app/history_panel.cpp
+  add_library(live_widgets app/research_panel.cpp app/research_workbench.cpp app/research_experiments.cpp app/research_snapshot.cpp app/learning_panel.cpp app/portfolio_panel.cpp app/portfolio_project.cpp app/portfolio_replay.cpp app/research_journey.cpp app/research_panel.hpp app/json_http.cpp app/market_history.cpp app/market_history.hpp app/visual_chart.cpp app/history_panel.cpp
     app/main_window.cpp app/workspace_navigation.cpp app/main_window.hpp
     app/instrument_catalog.cpp app/instrument_catalog.hpp app/catalog_dialog.cpp app/catalog_dialog.hpp app/resource_monitor.cpp
     app/chart_widget.cpp app/chart_widget.hpp app/market_feed.cpp app/market_feed.hpp)
