@@ -32,9 +32,10 @@ double quantile(const std::vector<double> &sorted, double p) {
 }
 std::size_t idx(Feature f) { return static_cast<std::size_t>(f); }
 void validate_config(const SimConfig &c) {
-    for (double v : {c.initial_cash, c.commission_rate, c.fixed_fee, c.spread_bps, c.slippage_bps,
-                     c.allocation, c.stop_fraction, c.target_fraction, c.risk_per_trade, c.max_drawdown,
-                     c.daily_loss, c.participation, c.tick_size})
+    for (double v :
+         {c.initial_cash, c.commission_rate, c.fixed_fee, c.spread_bps, c.slippage_bps, c.allocation,
+          c.stop_fraction, c.target_fraction, c.risk_per_trade, c.max_drawdown, c.daily_loss, c.participation,
+          c.tick_size, c.partial_target_fraction, c.partial_exit_fraction})
         if (!std::isfinite(v) || v < 0)
             throw std::invalid_argument("Invalid simulation setting");
     if (c.initial_cash < 1 || c.initial_cash > 1e12 || c.commission_rate > .1 ||
@@ -46,7 +47,8 @@ void validate_config(const SimConfig &c) {
         c.annual_periods > 100000 || c.tick_size > 1e9 || c.signal_delay < 0 || c.signal_delay > 10 ||
         c.entry_confirmation < 1 || c.entry_confirmation > 50 || c.exit_confirmation < 1 ||
         c.exit_confirmation > 50 || c.cooldown_bars < 0 || c.cooldown_bars > 500 || c.max_holding_bars < 0 ||
-        c.max_holding_bars > 5000)
+        c.max_holding_bars > 5000 || c.partial_target_fraction > 10 || c.partial_exit_fraction <= 0 ||
+        c.partial_exit_fraction >= 1)
         throw std::invalid_argument("Simulation setting out of range");
     for (const auto &group : {c.strategy.entry, c.strategy.exit}) {
         if (!valid_rule_expression(group))
@@ -608,6 +610,9 @@ void PaperEngine::entry(const Bar &b) {
     result_.metrics.execution_cost += qty * (price - b.open);
     cash_ -= notional + fee;
     units_ = qty;
+    partial_remaining_ = 0;
+    partial_wait_ = 0;
+    partial_complete_ = false;
     held_bars_ = 0;
     entry_streak_ = exit_streak_ = 0;
     entry_price_ = price;
@@ -621,15 +626,31 @@ void PaperEngine::entry(const Bar &b) {
     trace_fill(requested, qty, b.open, price, fee,
                "BUY: previous closed-bar rule; next open; unfilled remainder cancelled");
 }
-void PaperEngine::exit(const Bar &b, double raw, const std::string &reason, bool unlimited) {
+void PaperEngine::exit(const Bar &b, double raw, const std::string &reason, bool unlimited,
+                       std::int64_t planned_slice) {
+    const bool partial = planned_slice > 0;
+    if (!partial) {
+        partial_remaining_ = 0;
+        partial_wait_ = 0;
+        if (config_.partial_target_fraction > 0)
+            partial_complete_ = true;
+    }
     if (!units_) {
         pending_exit_ = false;
         return;
     }
-    std::int64_t qty = units_;
+    const auto requested_units =
+        partial ? std::min(planned_slice, std::max<std::int64_t>(0, units_ - config_.lot)) : units_;
+    std::int64_t qty = requested_units;
     if (config_.participation > 0 && !unlimited)
         qty = std::min(qty, liquidity_cap_);
     if (qty <= 0) {
+        if (partial) {
+            partial_wait_ = 0;
+            log(b, 0, raw, "partial exit pending: previous-volume cap");
+            trace_fill(-requested_units, 0, raw, raw, 0, "partial exit pending: previous-volume cap");
+            return;
+        }
         pending_exit_ = true;
         exit_wait_ = 0;
         log(b, 0, raw, "exit pending: previous-volume cap");
@@ -641,7 +662,7 @@ void PaperEngine::exit(const Bar &b, double raw, const std::string &reason, bool
         config_.tick_size > 0
             ? std::max(0.0, std::floor(raw_price / config_.tick_size + 1e-10) * config_.tick_size)
             : raw_price;
-    const auto requested = -units_;
+    const auto requested = -requested_units;
     const double notional = qty * price, fee = notional * config_.commission_rate + config_.fixed_fee;
     const double allocated = cost_basis_ * static_cast<double>(qty) / units_;
     const double pnl = notional - fee - allocated;
@@ -655,10 +676,18 @@ void PaperEngine::exit(const Bar &b, double raw, const std::string &reason, bool
     units_ -= qty;
     traded_ += notional;
     ++result_.metrics.fills;
+    if (partial)
+        ++result_.metrics.partial_fills;
     log(b, -qty, price, reason);
     trace_fill(requested, -qty, raw, price, fee, reason);
-    pending_exit_ = units_ > 0;
-    if (pending_exit_)
+    if (partial) {
+        partial_remaining_ -= qty;
+        partial_wait_ = 0;
+        if (partial_remaining_ == 0)
+            partial_complete_ = true;
+    } else
+        pending_exit_ = units_ > 0;
+    if (!partial && pending_exit_)
         exit_wait_ = 0;
     if (!units_) {
         held_bars_ = entry_streak_ = exit_streak_ = 0;
@@ -699,6 +728,7 @@ void PaperEngine::trace_fill(std::int64_t requested, std::int64_t quantity, doub
 void PaperEngine::request_stop(const std::string &reason) {
     halted_ = true;
     pending_entry_ = false;
+    partial_remaining_ = 0;
     pending_exit_ = units_ > 0;
     result_.halt_reason = reason;
 }
@@ -745,6 +775,15 @@ void PaperEngine::step(const Bar &b) {
                           : "SELL: previous closed-bar exit; next open");
     if (pending_entry_ && !units_ && entry_wait_-- <= 0)
         entry(b);
+    if (units_ && partial_remaining_ > 0 && !pending_exit_ && !halted_ && !session_halted_) {
+        const bool stop_gap =
+            config_.stop_fraction > 0 && b.open <= entry_price_ * (1 - config_.stop_fraction);
+        const bool target_gap =
+            config_.target_fraction > 0 && b.open >= entry_price_ * (1 + config_.target_fraction);
+        if (!stop_gap && !target_gap && partial_wait_-- <= 0)
+            exit(b, b.open, "PARTIAL SELL: close-confirmed profit stage; next open", false,
+                 partial_remaining_);
+    }
     if (units_) {
         const double stop = entry_price_ * (1 - config_.stop_fraction),
                      target = entry_price_ * (1 + config_.target_fraction);
@@ -808,6 +847,25 @@ void PaperEngine::step(const Bar &b) {
             log(b, 0, b.close, "SIGNAL: entry, pending next open");
         }
     }
+    if (pending_exit_ || halted_ || session_halted_) {
+        partial_remaining_ = 0;
+        partial_wait_ = 0;
+        if (config_.partial_target_fraction > 0)
+            partial_complete_ = true;
+    } else if (units_ && !partial_complete_ && partial_remaining_ == 0 &&
+               config_.partial_target_fraction > 0 &&
+               b.close >= entry_price_ * (1 + config_.partial_target_fraction)) {
+        partial_complete_ = true;
+        const auto lots = static_cast<std::int64_t>(
+            std::floor((units_ / config_.lot) * config_.partial_exit_fraction + 1e-12));
+        partial_remaining_ = std::min(lots * config_.lot, units_ - config_.lot);
+        if (partial_remaining_ > 0) {
+            partial_wait_ = config_.signal_delay;
+            partial_complete_ = false;
+            log(b, 0, b.close, "SIGNAL: partial profit stage, pending next open");
+        } else
+            log(b, 0, b.close, "partial exit skipped: less than one lot or no remaining lot");
+    }
     if (capture_trace_) {
         trace_.units_after = units_;
         trace_.cash_after = cash_;
@@ -822,10 +880,14 @@ void PaperEngine::step(const Bar &b) {
         trace_.pending_exit = pending_exit_;
         trace_.entry_wait = std::max(0, entry_wait_);
         trace_.exit_wait = std::max(0, exit_wait_);
+        trace_.partial_remaining = partial_remaining_;
+        trace_.partial_wait = std::max(0, partial_wait_);
+        trace_.partial_complete = partial_complete_;
         trace_.gate = halted_                                         ? "halt"
                       : session_halted_                               ? "session halt"
                       : pending_exit_                                 ? "exit pending"
                       : pending_entry_                                ? "entry pending"
+                      : partial_remaining_ > 0                        ? "partial pending"
                       : units_                                        ? "holding"
                       : cooldown_remaining_                           ? "cooldown"
                       : entries_today_ >= config_.max_entries_per_day ? "entry limit"
@@ -852,6 +914,9 @@ void PaperEngine::finish() {
             trace.cash_after = cash_;
             trace.equity = cash_;
             trace.pending_entry = trace.pending_exit = false;
+            trace.partial_remaining = 0;
+            trace.partial_wait = 0;
+            trace.partial_complete = partial_complete_;
             trace.gate = "predefined end";
         }
     }
@@ -861,6 +926,7 @@ SimResult PaperEngine::result() const {
     auto out = result_;
     out.cash = cash_;
     out.units = units_;
+    out.partial_remaining = partial_remaining_;
     out.unrealized = units_ ? units_ * last_.close - cost_basis_ : 0;
     out.halted = halted_;
     auto &m = out.metrics;
@@ -921,6 +987,7 @@ SimResult buy_hold(const std::vector<Bar> &bars, const SimConfig &config) {
     baseline.strategy.buy_hold = true;
     baseline.entry_confirmation = baseline.exit_confirmation = 1;
     baseline.cooldown_bars = baseline.max_holding_bars = 0;
+    baseline.partial_target_fraction = 0;
     baseline.stop_fraction = baseline.target_fraction = 0;
     baseline.max_drawdown = baseline.daily_loss = 1;
     baseline.participation = 0;

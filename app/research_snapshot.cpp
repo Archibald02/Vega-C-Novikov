@@ -10,7 +10,7 @@
 #include <stdexcept>
 namespace live {
 namespace {
-constexpr auto engine = "qpl-single-backtest-v3";
+constexpr auto engine = "qpl-single-backtest-v4";
 void require(bool condition) {
     if (!condition)
         throw std::invalid_argument("Snapshot schema/data");
@@ -105,6 +105,8 @@ QJsonObject config_json(const quant::SimConfig &c) {
             {"exit_confirmation", c.exit_confirmation},
             {"cooldown_bars", c.cooldown_bars},
             {"max_holding_bars", c.max_holding_bars},
+            {"partial_target", c.partial_target_fraction},
+            {"partial_fraction", c.partial_exit_fraction},
             {"participation", c.participation},
             {"lot", static_cast<double>(c.lot)},
             {"max_entries", c.max_entries_per_day},
@@ -118,6 +120,10 @@ quant::SimConfig config(const QJsonValue &v, int schema) {
     const auto o = v.toObject();
     quant::SimConfig c;
     auto expected = config_json(c);
+    if (schema < 4) {
+        expected.remove("partial_target");
+        expected.remove("partial_fraction");
+    }
     if (legacy)
         for (const auto *key :
              {"entry_confirmation", "exit_confirmation", "cooldown_bars", "max_holding_bars"})
@@ -145,6 +151,10 @@ quant::SimConfig config(const QJsonValue &v, int schema) {
     c.daily_loss = number(o["daily"]);
     c.tick_size = number(o["tick"]);
     c.signal_delay = integer(o["delay"]);
+    if (schema >= 4) {
+        c.partial_target_fraction = number(o["partial_target"]);
+        c.partial_exit_fraction = number(o["partial_fraction"]);
+    }
     if (!legacy) {
         c.entry_confirmation = integer(o["entry_confirmation"]);
         c.exit_confirmation = integer(o["exit_confirmation"]);
@@ -166,7 +176,7 @@ QJsonArray doubles(const std::vector<double> &values) {
         a.append(std::isfinite(v) ? QJsonValue(v) : QJsonValue(QJsonValue::Null));
     return a;
 }
-QJsonArray trace_json(const std::vector<quant::ExecutionTrace> &trace) {
+QJsonArray trace_json(const std::vector<quant::ExecutionTrace> &trace, bool with_partial) {
     QJsonArray a;
     for (const auto &t : trace) {
         require(t.fill_count >= 0 && t.fill_count <= static_cast<int>(t.fills.size()));
@@ -177,15 +187,34 @@ QJsonArray trace_json(const std::vector<quant::ExecutionTrace> &trace) {
                                     QString::number(f.units_after), f.trigger, f.price, f.fee, f.cost,
                                     f.cash_after, QString::fromStdString(f.reason)});
         }
-        a.append(QJsonArray{QString::number(t.time), QString::number(t.units_before),
-                            QString::number(t.units_after), t.cash_before, t.cash_after, t.equity,
-                            t.entry_condition, t.exit_condition, t.pending_entry, t.pending_exit,
-                            t.entry_streak, t.exit_streak, t.held_bars, t.cooldown_remaining, t.entry_wait,
-                            t.exit_wait, QString::fromStdString(t.gate), fills});
+        QJsonArray row{QString::number(t.time),
+                       QString::number(t.units_before),
+                       QString::number(t.units_after),
+                       t.cash_before,
+                       t.cash_after,
+                       t.equity,
+                       t.entry_condition,
+                       t.exit_condition,
+                       t.pending_entry,
+                       t.pending_exit,
+                       t.entry_streak,
+                       t.exit_streak,
+                       t.held_bars,
+                       t.cooldown_remaining,
+                       t.entry_wait,
+                       t.exit_wait,
+                       QString::fromStdString(t.gate),
+                       fills};
+        if (with_partial) {
+            row.append(QString::number(t.partial_remaining));
+            row.append(t.partial_wait);
+            row.append(t.partial_complete);
+        }
+        a.append(row);
     }
     return a;
 }
-QJsonObject result_json(const quant::SimResult &r) {
+QJsonObject result_json(const quant::SimResult &r, bool with_partial = true) {
     const auto &m = r.metrics;
     QJsonArray journal, times;
     for (const auto &e : r.journal)
@@ -209,7 +238,11 @@ QJsonObject result_json(const quant::SimResult &r) {
         {"halted", r.halted},
         {"halt_reason", QString::fromStdString(r.halt_reason)}};
     if (!r.trace.empty())
-        object.insert("trace", trace_json(r.trace));
+        object.insert("trace", trace_json(r.trace, with_partial));
+    if (with_partial) {
+        object.insert("partial_remaining", QString::number(r.partial_remaining));
+        object.insert("partial_fills", r.metrics.partial_fills);
+    }
     return object;
 }
 bool same(const QJsonValue &a, const QJsonValue &b) {
@@ -233,7 +266,7 @@ bool same(const QJsonValue &a, const QJsonValue &b) {
         if (x.keys() != y.keys())
             return false;
         for (auto i = x.begin(); i != x.end(); ++i) {
-            if (i.key() == "fills" || i.key() == "closed_trades") {
+            if (i.key() == "fills" || i.key() == "closed_trades" || i.key() == "partial_fills") {
                 if (i.value() != y.value(i.key()))
                     return false;
             } else if (!same(i.value(), y.value(i.key())))
@@ -253,7 +286,7 @@ QByteArray encode_snapshot(const ReplaySnapshot &s, const QString &source, const
     quant::validate_bars(s.bars);
     const auto bars = bars_json(s.bars);
     const auto bytes = QJsonDocument(QJsonObject{{"format", "QuantPriceLiveSnapshot"},
-                                                 {"schema", 3},
+                                                 {"schema", 4},
                                                  {"engine", engine},
                                                  {"source", source},
                                                  {"name", name},
@@ -276,8 +309,9 @@ QString verify_snapshot(const QByteArray &bytes, const std::atomic<bool> &cancel
     const auto root = doc.object();
     const bool legacy = root["schema"] == 1 && root["engine"] == "qpl-single-backtest-v1";
     const bool legacy_two = root["schema"] == 2 && root["engine"] == "qpl-single-backtest-v2";
+    const bool legacy_three = root["schema"] == 3 && root["engine"] == "qpl-single-backtest-v3";
     require(root.size() == 10 && root["format"] == "QuantPriceLiveSnapshot" &&
-            (legacy || legacy_two || (root["schema"] == 3 && root["engine"] == engine)));
+            (legacy || legacy_two || legacy_three || (root["schema"] == 4 && root["engine"] == engine)));
     for (const auto &key : {"name", "hypothesis", "source"})
         require(root[key].isString());
     require(!root["name"].toString().isEmpty() && root["name"].toString().size() <= 120 &&
@@ -318,7 +352,7 @@ QString verify_snapshot(const QByteArray &bytes, const std::atomic<bool> &cancel
     if (cancelled.load())
         return QStringLiteral("Проверка отменена.");
     require(root["reference"].isObject());
-    if (!same(root["reference"], result_json(actual)))
+    if (!same(root["reference"], result_json(actual, root["schema"].toInt() >= 4)))
         return QStringLiteral("НЕ СОВПАЛО: эталон и повторный бэктест различаются. Проверьте версию модели и "
                               "файл. Данные и настройки рабочего исследования не изменены.");
     return QStringLiteral("СОВПАЛО: %1 свечей, %2 исполнений. Капитал, просадка, метрики и журнал "

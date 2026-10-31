@@ -96,6 +96,14 @@ QVector<QPointF> points(const std::vector<double> &values, double factor = 1) {
 }
 QString reason(const std::string &s) {
     const QString v = QString::fromStdString(s);
+    if (v.startsWith("PARTIAL SELL"))
+        return QStringLiteral("Плановый частичный выход на открытии");
+    if (v.startsWith("SIGNAL: partial"))
+        return QStringLiteral("Рост закрытия достиг этапа; назначен частичный выход");
+    if (v.startsWith("partial exit pending"))
+        return QStringLiteral("Частичный выход ожидает предыдущего доступного объёма");
+    if (v.startsWith("partial exit skipped"))
+        return QStringLiteral("Частичный этап пропущен: нет полного лота для продажи с сохранением остатка");
     if (v.startsWith("BUY"))
         return QStringLiteral("Покупка на следующем открытии; остаток отменён");
     if (v.startsWith("SELL"))
@@ -179,6 +187,7 @@ void journal_rows(QTableWidget *table, const quant::SimResult &result) {
 } // namespace
 QString execution_gate(const std::string &gate) {
     static const QMap<QString, QString> gates{
+        {"partial pending", QStringLiteral("Назначен частичный выход; оставшаяся позиция сохраняется")},
         {"halt", QStringLiteral("Аварийная остановка; новые входы запрещены")},
         {"session halt", QStringLiteral("Лимит убытка сессии; новые входы запрещены")},
         {"entry pending", QStringLiteral("Сигнал входа подтверждён, исполнение ожидает открытия")},
@@ -934,6 +943,11 @@ QWidget *ResearchPanel::strategy_page() {
     participation_ = number(0, 0, 100);
     stop_ = number(2, 0, 99);
     target_ = number(4, 0, 1000);
+    partial_target_ = number(0, 0, 1000, 2);
+    partial_fraction_ = number(50, 1, 99, 2);
+    partial_target_->setToolTip(QStringLiteral(
+        "Например: частичный рост 2%, полная цель 4%. Если полная цель ниже частичного порога, она может "
+        "закрыть всю позицию раньше. Триггер не гарантирует цену следующего открытия."));
     risk_ = number(1, .01, 100);
     max_dd_ = number(20, .01, 100);
     daily_ = number(5, .01, 100);
@@ -950,6 +964,17 @@ QWidget *ResearchPanel::strategy_page() {
     form->addRow(QStringLiteral("Стоп: допустимое движение вниз, %"), stop_);
     form->addRow(QStringLiteral("Цель: движение вверх для выхода, %"), target_);
     layout->addWidget(ui::fold(QStringLiteral("Деньги и риск сделки"), budget, true));
+    auto *partial = new QWidget;
+    auto *pf = new QFormLayout(partial);
+    pf->addRow(QStringLiteral("Рост закрытия от цены покупки, % (0 = выключено)"), partial_target_);
+    pf->addRow(QStringLiteral("Продать долю позиции, %"), partial_fraction_);
+    pf->addRow(text(
+        QStringLiteral("Один этап на сделку. Триггер — закрытие, исполнение — следующее открытие с обычной "
+                       "задержкой сигнала. Количество округляется вниз до лотов; минимум один лот остаётся. "
+                       "Если продаваемого лота нет, этап пропускается. Полный выход и стоп имеют приоритет; "
+                       "при нехватке предыдущего объёма переносится только назначенный остаток. Это рост "
+                       "цены без вычета комиссий; все издержки учитываются в деньгах.")));
+    layout->addWidget(ui::fold(QStringLiteral("Плановый частичный выход"), partial));
     auto *execution = new QWidget;
     auto *ef = new QFormLayout(execution);
     ef->addRow(QStringLiteral("Комиссия при покупке и продаже, %"), commission_);
@@ -1142,6 +1167,8 @@ quant::SimConfig ResearchPanel::settings() const {
     c.cooldown_bars = cooldown_bars_->value();
     c.max_holding_bars = max_holding_bars_->value();
     c.signal_delay = signal_delay_->value();
+    c.partial_target_fraction = partial_target_->value() / 100;
+    c.partial_exit_fraction = partial_fraction_->value() / 100;
     return c;
 }
 std::vector<quant::Bar> ResearchPanel::selected_bars() const {
@@ -1359,6 +1386,16 @@ void ResearchPanel::explain_bar(int index) {
                      .arg(t.cooldown_remaining)
                      .arg(t.entry_wait)
                      .arg(t.exit_wait);
+        if (r.explained_config.partial_target_fraction > 0)
+            lines
+                << QStringLiteral(
+                       "Частичный этап: рост %1%, доля %2%. Назначенный остаток: %3 акций; задержка: %4; "
+                       "этап завершён/пропущен: %5. Последующие полные выходы отменяют назначенный остаток.")
+                       .arg(fmt(r.explained_config.partial_target_fraction * 100),
+                            fmt(r.explained_config.partial_exit_fraction * 100))
+                       .arg(t.partial_remaining)
+                       .arg(t.partial_wait)
+                       .arg(t.partial_complete ? QStringLiteral("да") : QStringLiteral("нет"));
         for (int i = 0; i < t.fill_count; ++i) {
             const auto &f = t.fills[i];
             lines << QStringLiteral(
@@ -1517,6 +1554,11 @@ void ResearchPanel::present(const LabResult &r) {
                                       : fmt(r.walk.compounded_return * 100))
             .arg(r.simulation.halted ? QStringLiteral("да") : QStringLiteral("нет"))
             .arg(r.simulation.units));
+    report_->setText(report_->text() +
+                     QStringLiteral("\nПлановых частичных исполнений: %1; назначенный остаток: %2 акций. Это "
+                                    "части одной позиции, не отдельные закрытые сделки.")
+                         .arg(m.partial_fills)
+                         .arg(r.simulation.partial_remaining));
     equity_chart_->set_lines(
         {{QStringLiteral("Стратегия"), QColor("#39d2b0"), points(r.simulation.equity), false},
          {QStringLiteral("Держать"), QColor("#829eff"), points(r.baseline.equity), false},
@@ -1671,6 +1713,11 @@ void ResearchPanel::update_paper() {
                                     ? QStringLiteral("лимит просадки / капитала")
                                     : QString::fromStdString(r.halt_reason))
                      : QString()));
+    paper_status_->setText(
+        paper_status_->text() +
+        QStringLiteral("\nЧастичных исполнений: %1; назначенный остаток частичного этапа: %2 акций.")
+            .arg(r.metrics.partial_fills)
+            .arg(r.partial_remaining));
     paper_chart_->set_lines(
         {{QStringLiteral("Виртуальный капитал"), QColor("#39d2b0"), points(r.equity), false}},
         live_paper_ ? QStringLiteral("Новые закрытые свечи MOEX • задержанный тренажёр")
@@ -1764,6 +1811,8 @@ bool ResearchPanel::self_test() {
     for (const auto &kv : data_)
         all.push_back(kv.second);
     r.correlation = quant::aligned_correlation(all);
+    partial_target_->setValue(.1);
+    partial_fraction_->setValue(50);
     const auto config = settings();
     r.simulation = quant::backtest(bars, config, 0, true);
     r.baseline = quant::buy_hold(bars, config);
@@ -1782,6 +1831,8 @@ bool ResearchPanel::self_test() {
         return false;
     const int old_fast = fast_->value();
     const int old_confirmation = entry_confirmation_->value();
+    const double old_partial_target = partial_target_->value();
+    partial_target_->setValue(99);
     entry_confirmation_->setValue(old_confirmation == 50 ? 1 : 50);
     fast_->setValue(old_fast + 1);
     explain_bar(100);
@@ -1789,6 +1840,7 @@ bool ResearchPanel::self_test() {
         return false;
     fast_->setValue(old_fast);
     entry_confirmation_->setValue(old_confirmation);
+    partial_target_->setValue(old_partial_target);
     explain_bar(0);
     if (!explanation_->text().contains(QStringLiteral("Нет рассчитанной свечи")))
         return false;

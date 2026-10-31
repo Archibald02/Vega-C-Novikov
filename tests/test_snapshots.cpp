@@ -19,6 +19,27 @@ live::ReplaySnapshot example(int count = 180) {
     return s;
 }
 QByteArray encode(const QJsonObject &object) { return QJsonDocument(object).toJson(QJsonDocument::Compact); }
+QJsonObject legacy_without_partial(QJsonObject root) {
+    auto c = root["config"].toObject();
+    c.remove("partial_target");
+    c.remove("partial_fraction");
+    root["config"] = c;
+    auto r = root["reference"].toObject();
+    r.remove("partial_remaining");
+    r.remove("partial_fills");
+    if (r.contains("trace")) {
+        auto trace = r["trace"].toArray();
+        for (int i = 0; i < trace.size(); ++i) {
+            auto row = trace[i].toArray();
+            while (row.size() > 18)
+                row.removeLast();
+            trace[i] = row;
+        }
+        r["trace"] = trace;
+    }
+    root["reference"] = r;
+    return root;
+}
 } // namespace
 TEST_CASE("Snapshot reproduces complete causal backtest independently of UI settings") {
     const auto s = example();
@@ -118,6 +139,7 @@ TEST_CASE("Version one default snapshots replay with explicit legacy timing defa
     auto root = QJsonDocument::fromJson(live::encode_snapshot(s, "DEMO", "Legacy", {})).object();
     root["schema"] = 1;
     root["engine"] = "qpl-single-backtest-v1";
+    root = legacy_without_partial(root);
     auto config = root["config"].toObject();
     for (const auto *key : {"entry", "exit"}) {
         auto group = config[key].toObject();
@@ -179,6 +201,7 @@ TEST_CASE("Version two flat snapshots retain timing and traces without inventing
     auto root = QJsonDocument::fromJson(live::encode_snapshot(s, "DEMO", "V2", {})).object();
     root["schema"] = 2;
     root["engine"] = "qpl-single-backtest-v2";
+    root = legacy_without_partial(root);
     auto c = root["config"].toObject();
     for (const auto *key : {"entry", "exit"}) {
         auto g = c[key].toObject();
@@ -188,4 +211,42 @@ TEST_CASE("Version two flat snapshots retain timing and traces without inventing
     root["config"] = c;
     std::atomic<bool> cancelled{false};
     CHECK(live::verify_snapshot(encode(root), cancelled).startsWith(QStringLiteral("СОВПАЛО:")));
+}
+TEST_CASE("Version three snapshots preserve nested formulas without enabling a partial stage") {
+    auto s = example();
+    s.config.strategy.entry.rules.resize(4);
+    s.config.strategy.entry.expression = {0, 1, 2, -2, -1, 3, -1};
+    s.reference = quant::backtest(s.bars, s.config, 0, true);
+    auto root =
+        legacy_without_partial(QJsonDocument::fromJson(live::encode_snapshot(s, "DEMO", "V3", {})).object());
+    root["schema"] = 3;
+    root["engine"] = "qpl-single-backtest-v3";
+    std::atomic<bool> cancelled{false};
+    CHECK(live::verify_snapshot(encode(root), cancelled).startsWith(QStringLiteral("СОВПАЛО:")));
+}
+TEST_CASE("Partial-stage snapshot freezes quantity, fees and pending state") {
+    auto s = example();
+    s.config.strategy.buy_hold = true;
+    s.config.stop_fraction = s.config.target_fraction = 0;
+    s.config.partial_target_fraction = .01;
+    s.config.partial_exit_fraction = .5;
+    s.reference = quant::backtest(s.bars, s.config, 0, true);
+    REQUIRE(s.reference.metrics.partial_fills > 0);
+    const auto root = QJsonDocument::fromJson(live::encode_snapshot(s, "DEMO", "Partial", {})).object();
+    std::atomic<bool> cancelled{false};
+    CHECK(live::verify_snapshot(encode(root), cancelled).startsWith(QStringLiteral("СОВПАЛО:")));
+    SUBCASE("partial counter cannot be fractional") {
+        auto bad = root;
+        auto r = bad["reference"].toObject();
+        r["partial_fills"] = s.reference.metrics.partial_fills + 1e-9;
+        bad["reference"] = r;
+        CHECK(live::verify_snapshot(encode(bad), cancelled).startsWith(QStringLiteral("НЕ СОВПАЛО:")));
+    }
+    SUBCASE("schema four requires the new stage settings") {
+        auto bad = root;
+        auto c = bad["config"].toObject();
+        c.remove("partial_fraction");
+        bad["config"] = c;
+        CHECK_THROWS(live::verify_snapshot(encode(bad), cancelled));
+    }
 }

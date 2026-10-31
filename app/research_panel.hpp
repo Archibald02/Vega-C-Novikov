@@ -72,6 +72,7 @@ class ResearchPanel : public QWidget {
     void explain_bar(int index);
     QSpinBox *explanation_bar_ = nullptr;
     QSpinBox *entry_confirmation_, *exit_confirmation_, *cooldown_bars_, *max_holding_bars_, *signal_delay_;
+    QDoubleSpinBox *partial_target_, *partial_fraction_;
     QLabel *explanation_ = nullptr;
     void next_step();
     bool journey_test();

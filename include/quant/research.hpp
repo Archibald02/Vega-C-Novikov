@@ -105,6 +105,8 @@ struct SimConfig {
     int entry_confirmation = 1, exit_confirmation = 1; // consecutive true closed-bar groups, 1..50
     int cooldown_bars = 0;    // full subsequent closes blocked after flattening; exit bar is not counted
     int max_holding_bars = 0; // includes entry bar; 0 disables; exit next open without signal delay
+    double partial_target_fraction = 0; // one close-confirmed profit stage per position; 0 disables
+    double partial_exit_fraction = .5;  // rounded down to lots, leaves >=1 lot
     double participation = 0; // cap using PREVIOUS bar volume; zero disables this approximation
     std::int64_t lot = 1;
     int max_entries_per_day = 10, annual_periods = 0;
@@ -121,6 +123,7 @@ struct Metrics {
     double profit_factor = unavailable(), win_rate = unavailable();
     double fees = 0, execution_cost = 0; // cash commissions and adverse fill vs model trigger
     int fills = 0, closed_trades = 0;
+    int partial_fills = 0; // planned-stage executions, not completed trades
 };
 /** Actual model attempt/fill, including liquidity rejection. Prices are model assumptions, not quotes. */
 struct ExecutionFill {
@@ -135,6 +138,9 @@ struct ExecutionTrace {
     bool entry_condition = false, exit_condition = false, pending_entry = false, pending_exit = false;
     int entry_streak = 0, exit_streak = 0, held_bars = 0, cooldown_remaining = 0;
     int entry_wait = 0, exit_wait = 0;
+    std::int64_t partial_remaining = 0;
+    int partial_wait = 0;
+    bool partial_complete = false;
     std::string gate;
     std::array<ExecutionFill, 4> fills{}; // open exit, entry, intrabar exit, optional final liquidation
     int fill_count = 0;
@@ -148,6 +154,7 @@ struct SimResult {
     Metrics metrics;
     double cash = 0, unrealized = 0;
     std::int64_t units = 0;
+    std::int64_t partial_remaining = 0;
     bool halted = false;
     std::string halt_reason;
 };
@@ -165,7 +172,8 @@ class PaperEngine {
 
   private:
     void entry(const Bar &bar);
-    void exit(const Bar &bar, double price, const std::string &reason, bool unlimited = false);
+    void exit(const Bar &bar, double price, const std::string &reason, bool unlimited = false,
+              std::int64_t planned_slice = 0);
     void log(const Bar &bar, std::int64_t quantity, double price, const std::string &reason);
     void mark(const Bar &bar);
     void trace_fill(std::int64_t requested, std::int64_t quantity, double trigger, double price, double fee,
@@ -185,6 +193,9 @@ class PaperEngine {
     int entry_streak_ = 0, exit_streak_ = 0, held_bars_ = 0, cooldown_remaining_ = 0;
     bool time_exit_ = false, closed_this_bar_ = false, capture_trace_ = false, tracing_step_ = false;
     ExecutionTrace trace_;
+    std::int64_t partial_remaining_ = 0;
+    int partial_wait_ = 0;
+    bool partial_complete_ = false;
 };
 SimResult backtest(const std::vector<Bar> &bars, const SimConfig &config, std::size_t start = 0,
                    bool capture_trace = false);
