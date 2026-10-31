@@ -57,7 +57,7 @@ QWidget *MainWindow::home_panel() {
              lab_->show_demo();
          });
     layout->addWidget(ui::paragraph(QStringLiteral(
-        "Ctrl+1 — начало   •   Ctrl+2 — котировки   •   Ctrl+3 — исследование • Ctrl+4 — задания\nПроекты и "
+        "Ctrl+K — поиск функций • Ctrl+1…5 — начало, котировки, исследование, задания, портфель\nПроекты и "
         "отчёты сохраняются только по вашему действию. Токены не записываются на диск.")));
     auto *lessons =
         new QPushButton(QStringLiteral("Понять комиссии, риск и подбор параметров — учебные задания"));

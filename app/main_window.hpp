@@ -1,6 +1,7 @@
 #pragma once
 #include "chart_widget.hpp"
 #include "history_panel.hpp"
+#include "function_search.hpp"
 #include "instrument_catalog.hpp"
 #include "learning_panel.hpp"
 #include "market_feed.hpp"
@@ -16,6 +17,7 @@
 #include <QLineEdit>
 #include <QMainWindow>
 #include <QPushButton>
+#include <QPointer>
 #include <QSpinBox>
 #include <QTabWidget>
 #include <QTableWidget>
@@ -77,6 +79,18 @@ class MainWindow : public QMainWindow {
     QString selected_symbol() const;
     QWidget *home_panel();
     void update_workspace();
+    void show_function_search();
+    void navigate_function(int index);
+    QWidget *workspace_preferences();
+    void apply_text_size(int pixels);
+    void apply_column_preset(int preset);
+    void load_workspace_preferences();
+    bool workspace_tools_test();
+    QString base_style_;
+    QPointer<FunctionSearch> function_search_;
+    QSpinBox *text_size_ = nullptr;
+    QComboBox *column_preset_ = nullptr;
+    QVector<QCheckBox *> column_choices_;
     QWidget *quote_controls_, *quote_metrics_, *stream_footer_;
     QLabel *workspace_context_;
     QPushButton *portfolio_nav_ = nullptr;
@@ -102,7 +116,7 @@ class MainWindow : public QMainWindow {
     QPushButton *start_, *stop_, *catalog_button_;
     QLabel *banner_, *connection_, *metric_price_, *metric_sma_, *metric_vol_, *metric_count_,
         *indicator_text_, *resource_text_, *forecast_text_, *risk_text_, *alert_text_;
-    QTableWidget *table_;
+    QTableWidget *table_ = nullptr;
     QTabWidget *tabs_;
     ChartWidget *chart_;
     HistoryPanel *candles_;

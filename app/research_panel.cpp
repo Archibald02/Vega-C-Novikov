@@ -1515,6 +1515,11 @@ void ResearchPanel::update_paper() {
     journal_rows(journal_, r);
 }
 void ResearchPanel::set_test_view(int index) { tabs_->setCurrentIndex(std::clamp(index, 0, 8)); }
+void ResearchPanel::navigate_to(int index, bool advanced) {
+    if (advanced)
+        expert_->setChecked(true);
+    tabs_->setCurrentIndex(std::clamp(index, 0, 8));
+}
 void ResearchPanel::start_online_test() {
     symbols_->setText("SBER, GAZP");
     period_->setCurrentIndex(1);

@@ -56,6 +56,8 @@ class ResearchPanel : public QWidget {
     void start_online_test();
     bool online_ready();
     void set_test_view(int index);
+    /** Navigate without loading data or recalculating; optionally reveal expert analytics. */
+    void navigate_to(int index, bool advanced = false);
     void show_demo();
     QSize sizeHint() const override { return {1000, 600}; }
     QSize minimumSizeHint() const override { return {640, 350}; }

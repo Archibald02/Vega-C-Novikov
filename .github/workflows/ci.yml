@@ -77,7 +77,7 @@ jobs:
           Copy-Item README.md,RELEASE_NOTES_RU.md,GUIDE_WINDOWS_RU.md,START_HERE.html,THIRD_PARTY.md,PRIVACY.md,VERIFICATION.md,LAB_GUIDE_RU.md,LAB_GUIDE.html,WORKBENCH_GUIDE_RU.md,WORKBENCH_GUIDE.html,START_QUANT_PRICE_LIVE.cmd,LICENSE dist/
           Copy-Item licenses dist/licenses -Recurse
           Copy-Item docs dist/docs -Recurse
-          $manifest = @{ version = '6.1.0'; commit = $env:GITHUB_SHA; platform = 'Windows x64'; qt = '6.8.3'; source = 'https://github.com/Archibald02/Vega-C-Novikov'; runtime = 'Microsoft Visual C++ Redistributable x64'; }
+          $manifest = @{ version = '6.2.0'; commit = $env:GITHUB_SHA; platform = 'Windows x64'; qt = '6.8.3'; source = 'https://github.com/Archibald02/Vega-C-Novikov'; runtime = 'Microsoft Visual C++ Redistributable x64'; }
           $manifest | ConvertTo-Json | Set-Content -Encoding UTF8 dist/VERSION.json
           $licenses = Join-Path $env:QT_ROOT_DIR 'Licenses'
           if (Test-Path $licenses) { Copy-Item $licenses dist/QtLicenses -Recurse }

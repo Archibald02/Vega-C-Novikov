@@ -6,6 +6,7 @@
 #include <QDesktopServices>
 #include <QFontMetrics>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -51,10 +52,10 @@ QDoubleSpinBox *number(double value, double low = 0.01, double high = 1e12, int 
 }
 } // namespace
 MainWindow::MainWindow(bool test_mode) : test_mode_(test_mode) {
-    setWindowTitle(QStringLiteral("Quant Price Live 6.1 • Российские акции"));
+    setWindowTitle(QStringLiteral("Quant Price Live 6.2 • Российские акции"));
     resize(1280, 860);
     setMinimumSize(960, 640);
-    setStyleSheet(R"(
+    base_style_ = R"(
       QMainWindow,QWidget{background:#0b1420;color:#e7f0fa;font-family:'Segoe UI',sans-serif;font-size:13px;}
       QLabel{background:transparent;} QLineEdit,QComboBox,QSpinBox,QDoubleSpinBox{background:#162538;border:1px solid #31465d;border-radius:5px;padding:6px;min-height:20px;}
       QPushButton{background:#1c364f;border:1px solid #365371;border-radius:5px;padding:8px 14px;font-weight:600;}
@@ -67,7 +68,8 @@ MainWindow::MainWindow(bool test_mode) : test_mode_(test_mode) {
       QLineEdit:focus,QComboBox:focus,QSpinBox:focus,QDoubleSpinBox:focus,QPushButton:focus,QToolButton:focus{border:2px solid #57dcc7;}
       QListWidget::item{padding:11px 7px;border-bottom:1px solid #23374a;} QListWidget::item:selected{background:#205047;color:#fff;}
       QTabWidget::pane{border:1px solid #25394e;} QSplitter::handle{background:#0b1420;height:8px;}
-    )");
+    )";
+    apply_text_size(13);
     auto *root = new QWidget;
     auto *scroll = new QScrollArea;
     scroll->setWidgetResizable(true);
@@ -78,26 +80,27 @@ MainWindow::MainWindow(bool test_mode) : test_mode_(test_mode) {
     layout->setContentsMargins(20, 16, 20, 12);
     layout->setSpacing(10);
     auto *heading = new QHBoxLayout;
-    heading->addWidget(label("QUANT / PRICE LIVE 6.1", "font-size:23px;font-weight:700;letter-spacing:2px;"));
+    heading->addWidget(label("QUANT / PRICE LIVE 6.2", "font-size:23px;font-weight:700;letter-spacing:2px;"));
     heading->addStretch();
     heading->addWidget(
         label(QStringLiteral("Учебный терминал • только виртуальные сделки"), "color:#85a1b9;"));
     layout->addLayout(heading);
-    auto *navigation = new QHBoxLayout;
+    auto *navigation = new QGridLayout;
     home_nav_ = new QPushButton(QStringLiteral("Начало"));
     quotes_nav_ = new QPushButton(QStringLiteral("Котировки ▾"));
     lab_nav_ = new QPushButton(QStringLiteral("Исследование"));
+    int navigation_column = 0;
     for (auto *b : {home_nav_, quotes_nav_, lab_nav_}) {
         b->setCheckable(true);
-        navigation->addWidget(b);
+        navigation->addWidget(b, 0, navigation_column++);
     }
     learning_nav_ = new QPushButton(QStringLiteral("Учебные задания"));
     learning_nav_->setCheckable(true);
-    navigation->addWidget(learning_nav_);
+    navigation->addWidget(learning_nav_, 0, 3);
     connect(learning_nav_, &QPushButton::clicked, this, [this] { tabs_->setCurrentIndex(9); });
     portfolio_nav_ = new QPushButton(QStringLiteral("Портфель"));
     portfolio_nav_->setCheckable(true);
-    navigation->addWidget(portfolio_nav_);
+    navigation->addWidget(portfolio_nav_, 0, 4);
     connect(portfolio_nav_, &QPushButton::clicked, this, [this] { tabs_->setCurrentIndex(10); });
     auto *quote_menu = new QMenu(quotes_nav_);
     const QList<QPair<QString, int>> destinations{{QStringLiteral("График текущих цен"), 0},
@@ -117,8 +120,14 @@ MainWindow::MainWindow(bool test_mode) : test_mode_(test_mode) {
     connect(settings_menu->addAction(QStringLiteral("Подключения, приватность и помощь")),
             &QAction::triggered, this, [this] { tabs_->setCurrentIndex(4); });
     settings_nav->setMenu(settings_menu);
-    navigation->addStretch();
-    navigation->addWidget(settings_nav);
+    auto *find = new QPushButton(QStringLiteral("Поиск • Ctrl+K"));
+    find->setAccessibleName(QStringLiteral("Поиск функций"));
+    find->setToolTip(QStringLiteral("Найти раздел по названию, сокращению или задаче. Сеть не запускается."));
+    navigation->addWidget(find, 1, 0, 1, 2);
+    connect(find, &QPushButton::clicked, this, &MainWindow::show_function_search);
+    auto *find_key = new QShortcut(QKeySequence("Ctrl+K"), this);
+    connect(find_key, &QShortcut::activated, this, &MainWindow::show_function_search);
+    navigation->addWidget(settings_nav, 1, 3, 1, 2);
     layout->addLayout(navigation);
     workspace_context_ = label(QString());
     workspace_context_->setWordWrap(true);
@@ -227,6 +236,8 @@ MainWindow::MainWindow(bool test_mode) : test_mode_(test_mode) {
     indicator_text_->setWordWrap(true);
     metric_layout->addWidget(indicator_text_);
     auto *split = new QSplitter(Qt::Vertical);
+    // Let the scrollable pages shrink instead of propagating their preferred height to the outer window.
+    split->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
     table_ = new QTableWidget(0, 9);
     table_->setHorizontalHeaderLabels(
         {QStringLiteral("Тикер"), QStringLiteral("Цена, ₽"), QStringLiteral("Спрос, ₽"),
@@ -328,6 +339,8 @@ MainWindow::MainWindow(bool test_mode) : test_mode_(test_mode) {
     connect(lab_key, &QShortcut::activated, this, [this] { tabs_->setCurrentIndex(7); });
     auto *learning_key = new QShortcut(QKeySequence("Ctrl+4"), this);
     connect(learning_key, &QShortcut::activated, this, [this] { tabs_->setCurrentIndex(9); });
+    auto *portfolio_key = new QShortcut(QKeySequence("Ctrl+5"), this);
+    connect(portfolio_key, &QShortcut::activated, this, [this] { tabs_->setCurrentIndex(10); });
     split->addWidget(table_);
     split->addWidget(tabs_);
     split->setStretchFactor(0, 1);
@@ -394,10 +407,13 @@ MainWindow::MainWindow(bool test_mode) : test_mode_(test_mode) {
         window_->setValue(s.value("window", 20).toInt());
         frequency_->setValue(s.value("frequency", 250).toInt());
         provider_->setCurrentIndex(0);
+        const QSignalBlocker restoring_performance(performance_);
         performance_->setCurrentIndex(std::clamp(s.value("performance", 0).toInt(), 0, 2));
+        redraw_ms_ = performance_->currentIndex() == 0 ? 500 : performance_->currentIndex() == 1 ? 250 : 100;
         history_->setCurrentIndex(std::clamp(s.value("history", 1).toInt(), 0, 2));
         poll_seconds_->setValue(s.value("poll_seconds", 5).toInt());
     }
+    load_workspace_preferences();
 }
 QWidget *MainWindow::forecast_panel() {
     auto *page = new QWidget;
@@ -548,6 +564,7 @@ QWidget *MainWindow::performance_panel() {
     form->addRow(QStringLiteral("Лимит истории (до подключения)"), history_);
     form->addRow(QStringLiteral("MOEX ISS: период опроса"), poll_seconds_);
     layout->addLayout(form);
+    layout->addWidget(workspace_preferences());
     auto *text = label(QStringLiteral(
         "• Один пакетный HTTP-запрос вместо отдельного запроса на каждый тикер.\n• История заранее выделена "
         "и не растёт после лимита; 20 акций максимум.\n• Нет копирования истории в график и перерисовки без "
@@ -685,6 +702,8 @@ void MainWindow::reset_local_data() {
     oscillator_->setCurrentIndex(1);
     show_ema_->setChecked(false);
     show_bands_->setChecked(false);
+    text_size_->setValue(13);
+    apply_column_preset(1);
     bool settings_cleared = true;
     if (!test_mode_) {
         QSettings settings;
@@ -708,6 +727,13 @@ void MainWindow::save_settings() {
     s.setValue("performance", performance_->currentIndex());
     s.setValue("history", history_->currentIndex());
     s.setValue("poll_seconds", poll_seconds_->value());
+    if (text_size_) {
+        s.setValue("workspace/text_pixels", text_size_->value());
+        int hidden = 0;
+        for (int i = 0; i < column_choices_.size(); ++i)
+            if (!column_choices_[i]->isChecked()) hidden |= 1 << (i + 2);
+        s.setValue("workspace/hidden_columns", hidden);
+    }
 }
 void MainWindow::set_controls(bool connected) {
     quotes_nav_->setText(connected ? QStringLiteral("Котировки • поток включён ▾")
@@ -1163,6 +1189,10 @@ bool MainWindow::exercise_lab_test() {
     return lab_->self_test();
 }
 bool MainWindow::exercise_visuals_test() {
+    if (!workspace_tools_test()) {
+        std::fprintf(stderr, "Workspace navigation/preferences test: FAIL\n");
+        return false;
+    }
     const QFontMetrics glyphs(font());
     if (!glyphs.inFont(QChar('A')) || !glyphs.inFont(QChar(0x042F))) {
         std::fprintf(stderr, "Visual font check: Latin/Cyrillic glyphs missing\n");
@@ -1184,28 +1214,32 @@ bool MainWindow::exercise_visuals_test() {
     update_comparison();
     tabs_->setCurrentIndex(1);
     update_forecast();
-    for (const auto &size : {QSize(960, 640), QSize(1000, 720), QSize(1280, 800), QSize(1440, 1000)}) {
-        resize(size);
-        for (int tab = 0; tab < tabs_->count(); ++tab) {
-            tabs_->setCurrentIndex(tab);
-            // Nested scroll areas post a second layout request after their viewport changes.
-            // Drain bounded layout passes before measuring the final client geometry.
-            for (int pass = 0; pass < 3; ++pass) {
-                QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
-                QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-            }
-            if (tab == 7 && !rect().contains(QRect(lab_->mapTo(this, QPoint(0, 0)), lab_->size()))) {
-                const auto origin = lab_->mapTo(this, QPoint(0, 0));
-                std::fprintf(stderr,
-                             "Research viewport does not fit: window=%dx%d pane=%dx%d origin=%d,%d "
-                             "minimum=%dx%d hint=%dx%d\n",
-                             width(), height(), lab_->width(), lab_->height(), origin.x(), origin.y(),
-                             lab_->minimumWidth(), lab_->minimumHeight(), lab_->minimumSizeHint().width(),
-                             lab_->minimumSizeHint().height());
-                return false;
+    for (int text_pixels : {13, 18}) {
+        text_size_->setValue(text_pixels);
+        for (const auto &size : {QSize(960, 640), QSize(1000, 720), QSize(1280, 800), QSize(1440, 1000)}) {
+            resize(size);
+            for (int tab = 0; tab < tabs_->count(); ++tab) {
+                tabs_->setCurrentIndex(tab);
+                // Nested scroll areas post a second layout request after their viewport changes.
+                // Drain bounded layout passes before measuring the final client geometry.
+                for (int pass = 0; pass < 3; ++pass) {
+                    QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+                    QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+                }
+                if (tab == 7 && !rect().contains(QRect(lab_->mapTo(this, QPoint(0, 0)), lab_->size()))) {
+                    const auto origin = lab_->mapTo(this, QPoint(0, 0));
+                    std::fprintf(stderr,
+                                 "Research viewport does not fit: text=%d window=%dx%d pane=%dx%d origin=%d,%d "
+                                 "minimum=%dx%d hint=%dx%d\n",
+                                 text_pixels, width(), height(), lab_->width(), lab_->height(), origin.x(), origin.y(),
+                                 lab_->minimumWidth(), lab_->minimumHeight(), lab_->minimumSizeHint().width(),
+                                 lab_->minimumSizeHint().height());
+                    return false;
+                }
             }
         }
     }
+    text_size_->setValue(13);
     for (auto *widget : findChildren<QWidget *>())
         if (dynamic_cast<VisualChart *>(widget) || widget == chart_) {
             for (int i = 0; i < 25; ++i) {
@@ -1234,17 +1268,43 @@ bool MainWindow::exercise_privacy_test() {
         return false;
     provider_->setCurrentIndex(1);
     token_->setText("SYNTHETIC_TEST_TOKEN");
+    {
+        FunctionSearch search(this);
+        search.query()->setText("SYNTHETIC_TEST_TOKEN");
+    }
+    performance_->setCurrentIndex(1);
+    text_size_->setValue(18);
+    apply_column_preset(2);
     save_settings();
+    {
+        MainWindow restored;
+        if (restored.text_size_->value() != 18 || !restored.table_->isColumnHidden(2) ||
+            restored.table_->isColumnHidden(5) || restored.performance_->currentIndex() != 1 ||
+            restored.redraw_ms_ != 250 || restored.provider_->currentIndex() != 0 ||
+            !restored.token_->text().isEmpty())
+            return false;
+    }
     {
         QSettings settings;
         settings.sync();
         const QStringList allowed{"symbols",     "window",  "frequency",   "provider",
-                                  "performance", "history", "poll_seconds"};
+                                  "performance", "history", "poll_seconds", "workspace/text_pixels",
+                                  "workspace/hidden_columns"};
         for (const auto &key : settings.allKeys())
             if (!allowed.contains(key) || settings.value(key).toString().contains("SYNTHETIC_TEST_TOKEN") ||
                 settings.value(key).toString().contains("ENVIRONMENT_CANARY"))
                 return false;
+        if (settings.value("workspace/text_pixels").toInt() != 18 ||
+            settings.value("workspace/hidden_columns").toInt() != 0x5c)
+            return false;
+        settings.setValue("workspace/text_pixels", 1000000);
+        settings.setValue("workspace/hidden_columns", -1);
     }
+    load_workspace_preferences();
+    if (text_size_->value() != 18)
+        return false;
+    for (int column : {0, 1, 7, 8})
+        if (table_->isColumnHidden(column)) return false;
     provider_->setCurrentIndex(0);
     if (!token_->text().isEmpty())
         return false;
