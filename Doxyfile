@@ -1,7 +1,7 @@
 PROJECT_NAME = "Quant Price Live"
 PROJECT_BRIEF = "C++17 / Qt desktop monitor for Russian equities"
 OUTPUT_DIRECTORY = build/docs
-INPUT = README.md PRIVACY.md VERIFICATION.md LAB_GUIDE_RU.md WORKBENCH_GUIDE_RU.md GUIDE_WINDOWS_RU.md include src app docs/theory.md
+INPUT = README.md RELEASE_NOTES_RU.md PRIVACY.md VERIFICATION.md LAB_GUIDE_RU.md WORKBENCH_GUIDE_RU.md GUIDE_WINDOWS_RU.md include src app docs/theory.md
 RECURSIVE = YES
 FILE_PATTERNS = *.hpp *.cpp *.md
 USE_MDFILE_AS_MAINPAGE = README.md
