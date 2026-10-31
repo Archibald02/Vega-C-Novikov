@@ -2,6 +2,7 @@
 #include "indicators.hpp"
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 namespace quant {
@@ -12,6 +13,35 @@ struct Bar {
     int utc_offset_seconds = 10800; // Session zone at bar start; caller supplies historic offset.
 };
 void validate_bars(const std::vector<Bar> &bars);
+/** Locally aggregated complete hourly blocks; not an additional exchange/API
+ * candle feed. */
+/** Bounded causal state of complete H1 blocks; last_end is UTC milliseconds. */
+struct HigherState {
+    bool ready = false;
+    int progress = 0, completed = 0, discarded = 0, breaks = 0;
+    std::int64_t last_end = 0;
+    double fast = unavailable(), slow = unavailable(), close = unavailable();
+};
+/** Fixed local-midnight grid, no filling of missing slots, bounded rolling SMA
+ * windows. */
+/** Local-midnight aggregation. Missing H1 slots block new confirmation until a
+ * complete block. */
+class ClosedHourTrend {
+  public:
+    ClosedHourTrend(int factor, int fast, int slow);
+    HigherState push(const Bar &bar);
+    void validate_next(const Bar &bar) const;
+    const HigherState &state() const { return state_; }
+
+  private:
+    int factor_, fast_window_, slow_window_;
+    PriceMoments fast_, slow_;
+    HigherState state_;
+    Bar bucket_{};
+    std::int64_t bucket_start_ = -1, previous_end_ = 0;
+    int previous_offset_ = 0;
+    bool valid_ = false;
+};
 struct Distribution {
     std::vector<double> simple, log_returns;
     std::vector<double> bin_centers, bin_counts;
@@ -107,6 +137,10 @@ struct SimConfig {
     int max_holding_bars = 0; // includes entry bar; 0 disables; exit next open without signal delay
     double partial_target_fraction = 0; // one close-confirmed profit stage per position; 0 disables
     double partial_exit_fraction = .5;  // rounded down to lots, leaves >=1 lot
+    int higher_factor = 0;              // disabled or 2/3/4/6/12/24 complete hourly slots on
+                                        // a local-midnight grid
+    int higher_fast = 2, higher_slow = 5;
+    bool higher_confirm_exit = false; // entry: fast>slow; optional ordinary exit: fast<slow
     double participation = 0; // cap using PREVIOUS bar volume; zero disables this approximation
     std::int64_t lot = 1;
     int max_entries_per_day = 10, annual_periods = 0;
@@ -141,6 +175,8 @@ struct ExecutionTrace {
     std::int64_t partial_remaining = 0;
     int partial_wait = 0;
     bool partial_complete = false;
+    HigherState higher;
+    bool higher_entry_allowed = true, higher_exit_allowed = true;
     std::string gate;
     std::array<ExecutionFill, 4> fills{}; // open exit, entry, intrabar exit, optional final liquidation
     int fill_count = 0;
@@ -155,6 +191,7 @@ struct SimResult {
     double cash = 0, unrealized = 0;
     std::int64_t units = 0;
     std::int64_t partial_remaining = 0;
+    HigherState higher;
     bool halted = false;
     std::string halt_reason;
 };
@@ -196,6 +233,7 @@ class PaperEngine {
     std::int64_t partial_remaining_ = 0;
     int partial_wait_ = 0;
     bool partial_complete_ = false;
+    std::optional<ClosedHourTrend> higher_;
 };
 SimResult backtest(const std::vector<Bar> &bars, const SimConfig &config, std::size_t start = 0,
                    bool capture_trace = false);

@@ -104,7 +104,7 @@ bool write_report(const QString &html, const QString &path, bool pdf) {
         QPdfWriter writer(&file);
         writer.setResolution(120);
         writer.setPageSize(QPageSize(QPageSize::A4));
-        writer.setTitle("Quant Price Live 6.5.0");
+        writer.setTitle("Quant Price Live 6.6.0");
         QTextDocument doc;
         doc.setHtml(html);
         doc.print(&writer);
@@ -290,10 +290,12 @@ QWidget *ResearchPanel::workbench_page() {
     auto *release = new QPushButton(QStringLiteral("Версия и проверка обновлений"));
     l->addWidget(release);
     release_status_ =
-        note(QStringLiteral(
-                 "Quant Price Live 6.5.0 • C++17 / Qt %1 • %2 • %3\nWindows 10/11 x64; если отсутствует "
-                 "MSVCP140.dll/VCRUNTIME140.dll — установите официальный Microsoft Visual C++ "
-                 "Redistributable x64. При запуске приложение не проверяет обновления и ничего не загружает.")
+        note(QStringLiteral("Quant Price Live 6.6.0 • C++17 / Qt %1 • %2 • "
+                            "%3\nWindows 10/11 x64; если отсутствует "
+                            "MSVCP140.dll/VCRUNTIME140.dll — установите "
+                            "официальный Microsoft Visual C++ "
+                            "Redistributable x64. При запуске приложение не "
+                            "проверяет обновления и ничего не загружает.")
                  .arg(qVersion(), QSysInfo::prettyProductName(), QSysInfo::currentCpuArchitecture()));
     l->addWidget(release_status_);
     connect(release, &QPushButton::clicked, this, [this] {
@@ -306,16 +308,19 @@ QWidget *ResearchPanel::workbench_page() {
             [this](const HttpResult &r) {
                 release_reply_.clear();
                 if (!r.ok()) {
-                    release_status_->setText(QStringLiteral(
-                        "Версия приложения 6.5.0. Публичного релиза нет или API недоступен. Проверенные "
-                        "сборки находятся в GitHub Actions; обновление устанавливается вручную."));
+                    release_status_->setText(
+                        QStringLiteral("Версия приложения 6.6.0. Публичного релиза нет или API "
+                                       "недоступен. Проверенные "
+                                       "сборки находятся в GitHub Actions; обновление "
+                                       "устанавливается вручную."));
                     return;
                 }
                 const auto tag = r.document.object().value("tag_name").toString().left(80);
-                release_status_->setText(
-                    QStringLiteral("Установлена 6.5.0; последний опубликованный релиз: %1. Сравните версию "
-                                   "на GitHub перед ручной установкой. Автоматической замены файлов нет.")
-                        .arg(tag));
+                release_status_->setText(QStringLiteral("Установлена 6.6.0; последний "
+                                                        "опубликованный релиз: %1. Сравните версию "
+                                                        "на GitHub перед ручной установкой. "
+                                                        "Автоматической замены файлов нет.")
+                                             .arg(tag));
             },
             {}, {128 * 1024, 10000});
     });
@@ -337,6 +342,10 @@ QWidget *ResearchPanel::workbench_page() {
 }
 void ResearchPanel::setup_workbench() {
     const QList<QPair<QString, QObject *>> parameters{{"window", window_},
+                                                      {"higher_factor", higher_factor_},
+                                                      {"higher_fast", higher_fast_},
+                                                      {"higher_slow", higher_slow_},
+                                                      {"higher_exit", higher_exit_},
                                                       {"partial_target", partial_target_},
                                                       {"partial_fraction", partial_fraction_},
                                                       {"entry_expression", entry_expression_},
@@ -525,6 +534,16 @@ quant::SimConfig ResearchPanel::configuration_settings(const QJsonObject &object
     const auto current = configuration().value("values").toObject();
     auto value = [&](const char *key) {
         const QString name = QStringLiteral("study_") + key;
+        if (!v.contains(name)) {
+            if (name == "study_higher_factor")
+                return QVariant(0);
+            if (name == "study_higher_fast")
+                return QVariant(2);
+            if (name == "study_higher_slow")
+                return QVariant(5);
+            if (name == "study_higher_exit")
+                return QVariant(false);
+        }
         if (!v.contains(name) && name == "study_partial_target")
             return QVariant(0);
         if (!v.contains(name) && name == "study_partial_fraction")
@@ -570,6 +589,16 @@ quant::SimConfig ResearchPanel::configuration_settings(const QJsonObject &object
     c.signal_delay = value("signal_delay").toInt();
     c.partial_target_fraction = value("partial_target").toDouble() / 100;
     c.partial_exit_fraction = value("partial_fraction").toDouble() / 100;
+    const std::array<int, 7> higher_factors{0, 2, 3, 4, 6, 12, 24};
+    const int higher_index = value("higher_factor").toInt();
+    if (higher_index < 0 || higher_index >= 7)
+        throw std::invalid_argument("Higher factor index");
+    c.higher_factor = higher_factors[higher_index];
+    c.higher_fast = value("higher_fast").toInt();
+    c.higher_slow = value("higher_slow").toInt();
+    c.higher_confirm_exit = value("higher_exit").toBool();
+    if (c.higher_factor && value("period").toInt() != 2)
+        throw std::invalid_argument("Higher filter requires H1");
     for (int g = 0; g < 2; ++g) {
         auto &group = g == 0 ? c.strategy.entry : c.strategy.exit;
         group.rules.clear();
@@ -641,6 +670,14 @@ bool ResearchPanel::apply_configuration(const QJsonObject &object, bool validate
         if (validate_only)
             return true;
         // Validate everything before changing the controls. Unknown keys cannot become credentials or URLs.
+        if (!values.contains(higher_factor_->objectName()))
+            higher_factor_->setCurrentIndex(0);
+        if (!values.contains(higher_fast_->objectName()))
+            higher_fast_->setValue(2);
+        if (!values.contains(higher_slow_->objectName()))
+            higher_slow_->setValue(5);
+        if (!values.contains(higher_exit_->objectName()))
+            higher_exit_->setChecked(false);
         if (!values.contains(partial_target_->objectName()))
             partial_target_->setValue(0);
         if (!values.contains(partial_fraction_->objectName()))
@@ -691,7 +728,7 @@ bool ResearchPanel::save_project(const QString &path, bool include_account) {
     parameters.insert("values", values);
     QJsonObject project{{"format", "QuantPriceLive"},
                         {"schema", 1},
-                        {"app_version", "6.5.0"},
+                        {"app_version", "6.6.0"},
                         {"parameters", parameters},
                         {"attempts", attempts_}};
     QJsonArray seen;
@@ -1236,12 +1273,16 @@ QString ResearchPanel::report_html(bool compact) const {
     if (r.simulation.equity.empty())
         return {};
     const auto &m = r.simulation.metrics;
-    QString html =
-        QStringLiteral("<!doctype html><html lang='ru'><meta charset='utf-8'><title>Quant Price Live — "
-                       "исследование</title><style>body{font:14px sans-serif;max-width:1100px;margin:30px "
-                       "auto;color:#172a40}table{border-collapse:collapse;width:100%}td,th{border:1px solid "
-                       "#b7c5d2;padding:5px;text-align:left}pre{white-space:pre-wrap;word-break:break-all}"
-                       "img{max-width:100%}</style><h1>Quant Price Live 6.5.0 — учебное исследование</h1>");
+    QString html = QStringLiteral("<!doctype html><html lang='ru'><meta "
+                                  "charset='utf-8'><title>Quant Price Live — "
+                                  "исследование</title><style>body{font:14px "
+                                  "sans-serif;max-width:1100px;margin:30px "
+                                  "auto;color:#172a40}table{border-collapse:"
+                                  "collapse;width:100%}td,th{border:1px solid "
+                                  "#b7c5d2;padding:5px;text-align:left}pre{"
+                                  "white-space:pre-wrap;word-break:break-all}"
+                                  "img{max-width:100%}</style><h1>Quant Price "
+                                  "Live 6.6.0 — учебное исследование</h1>");
     html += "<p>" + r.source.toHtmlEscaped() + " • отчёт UTC " +
             QDateTime::currentDateTimeUtc().toString(Qt::ISODate) + "</p>";
     const auto formula_text = [](const quant::RuleGroup &group) {
@@ -1259,6 +1300,20 @@ QString ResearchPanel::report_html(bool compact) const {
                  num(r.explained_config.partial_exit_fraction * 100))
             .arg(m.partial_fills)
             .arg(r.simulation.partial_remaining);
+    html += QStringLiteral("<p>Старший интервал: %1 часов из H1 (0 — выключен); "
+                           "SMA %2/%3; подтверждение обычного выхода %4. "
+                           "Только полные закрытые блоки локальной сетки, без "
+                           "заполнения пропусков. "
+                           "Готовность %5, полных блоков %6, разрывов %7, неполных "
+                           "отброшено %8.</p>")
+                .arg(r.explained_config.higher_factor)
+                .arg(r.explained_config.higher_fast)
+                .arg(r.explained_config.higher_slow)
+                .arg(r.explained_config.higher_confirm_exit ? "да" : "нет")
+                .arg(r.simulation.higher.ready ? "да" : "нет")
+                .arg(r.simulation.higher.completed)
+                .arg(r.simulation.higher.breaks)
+                .arg(r.simulation.higher.discarded);
     html +=
         QStringLiteral("<h2>Формулы исходной стратегии</h2><p>Вход: %1<br>Выход: %2</p><p>Номера относятся к "
                        "четырём строкам условий. Выключенные строки исключены. Формулы зафиксированы в "
@@ -1381,6 +1436,12 @@ QString ResearchPanel::report_html(bool compact) const {
                              .arg(x.units_after)
                              .arg(execution_reason(x.reason).toHtmlEscaped());
             }
+            const QString higher = r.explained_config.higher_factor ?
+                QStringLiteral("<br>Старший: готов %1; конец UTC %2; SMA %3 / %4; слот %5; разрешён вход/выход %6/%7; разрывов %8")
+                    .arg(t.higher.ready ? "да" : "нет").arg(t.higher.last_end)
+                    .arg(num(t.higher.fast), num(t.higher.slow)).arg(t.higher.progress)
+                    .arg(t.higher_entry_allowed ? "да" : "нет", t.higher_exit_allowed ? "да" : "нет")
+                    .arg(t.higher.breaks) : QString();
             html +=
                 QStringLiteral("<tr><td>%1</td><td>%2 / %3</td><td>%4 / %5</td><td>%6 / %7</td><td>%8 / "
                                "%9</td><td>%10</td><td>%11</td></tr>")
@@ -1392,7 +1453,7 @@ QString ResearchPanel::report_html(bool compact) const {
                     .arg(t.exit_streak)
                     .arg(t.held_bars)
                     .arg(t.cooldown_remaining)
-                    .arg(execution_gate(t.gate).toHtmlEscaped() +
+                    .arg(execution_gate(t.gate).toHtmlEscaped() + higher +
                              QStringLiteral("<br>Условия вход/выход: %1/%2; дополнительных открытий до "
                                             "исполнения: %3/%4; капитал: %5")
                                  .arg(t.entry_condition ? QStringLiteral("да") : QStringLiteral("нет"),
@@ -1461,6 +1522,11 @@ bool ResearchPanel::workbench_test() {
     const auto old = configuration();
     auto legacy = old;
     auto legacy_values = legacy["values"].toObject();
+    for (auto *field : QList<QWidget *>{higher_factor_, higher_fast_, higher_slow_, higher_exit_})
+        legacy_values.remove(field->objectName());
+    higher_fast_->setValue(3);
+    higher_slow_->setValue(6);
+    higher_exit_->setChecked(true);
     legacy_values.remove(partial_target_->objectName());
     legacy_values.remove(partial_fraction_->objectName());
     partial_target_->setValue(5);
@@ -1489,6 +1555,9 @@ bool ResearchPanel::workbench_test() {
         signal_delay_->value() != 0)
         return false;
     if (partial_target_->value() != 0 || partial_fraction_->value() != 50)
+        return false;
+    if (higher_factor_->currentIndex() || higher_fast_->value() != 2 || higher_slow_->value() != 5 ||
+        higher_exit_->isChecked())
         return false;
     if (entry_expression_->currentIndex() || exit_expression_->currentIndex() ||
         !settings().strategy.entry.expression.empty() || !settings().strategy.exit.expression.empty())

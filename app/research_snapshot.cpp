@@ -10,7 +10,7 @@
 #include <stdexcept>
 namespace live {
 namespace {
-constexpr auto engine = "qpl-single-backtest-v4";
+constexpr auto engine = "qpl-single-backtest-v5";
 void require(bool condition) {
     if (!condition)
         throw std::invalid_argument("Snapshot schema/data");
@@ -107,6 +107,10 @@ QJsonObject config_json(const quant::SimConfig &c) {
             {"max_holding_bars", c.max_holding_bars},
             {"partial_target", c.partial_target_fraction},
             {"partial_fraction", c.partial_exit_fraction},
+            {"higher_factor", c.higher_factor},
+            {"higher_fast", c.higher_fast},
+            {"higher_slow", c.higher_slow},
+            {"higher_exit", c.higher_confirm_exit},
             {"participation", c.participation},
             {"lot", static_cast<double>(c.lot)},
             {"max_entries", c.max_entries_per_day},
@@ -120,6 +124,9 @@ quant::SimConfig config(const QJsonValue &v, int schema) {
     const auto o = v.toObject();
     quant::SimConfig c;
     auto expected = config_json(c);
+    if (schema < 5)
+        for (const auto *key : {"higher_factor", "higher_fast", "higher_slow", "higher_exit"})
+            expected.remove(key);
     if (schema < 4) {
         expected.remove("partial_target");
         expected.remove("partial_fraction");
@@ -151,6 +158,12 @@ quant::SimConfig config(const QJsonValue &v, int schema) {
     c.daily_loss = number(o["daily"]);
     c.tick_size = number(o["tick"]);
     c.signal_delay = integer(o["delay"]);
+    if (schema >= 5) {
+        c.higher_factor = integer(o["higher_factor"]);
+        c.higher_fast = integer(o["higher_fast"]);
+        c.higher_slow = integer(o["higher_slow"]);
+        c.higher_confirm_exit = boolean(o["higher_exit"]);
+    }
     if (schema >= 4) {
         c.partial_target_fraction = number(o["partial_target"]);
         c.partial_exit_fraction = number(o["partial_fraction"]);
@@ -176,7 +189,16 @@ QJsonArray doubles(const std::vector<double> &values) {
         a.append(std::isfinite(v) ? QJsonValue(v) : QJsonValue(QJsonValue::Null));
     return a;
 }
-QJsonArray trace_json(const std::vector<quant::ExecutionTrace> &trace, bool with_partial) {
+QJsonArray higher_json(const quant::HigherState &h) {
+    return {h.ready,
+            h.progress,
+            h.completed,
+            h.discarded,
+            h.breaks,
+            QString::number(h.last_end),
+            doubles({h.fast, h.slow, h.close})};
+}
+QJsonArray trace_json(const std::vector<quant::ExecutionTrace> &trace, bool with_partial, bool with_higher) {
     QJsonArray a;
     for (const auto &t : trace) {
         require(t.fill_count >= 0 && t.fill_count <= static_cast<int>(t.fills.size()));
@@ -210,11 +232,16 @@ QJsonArray trace_json(const std::vector<quant::ExecutionTrace> &trace, bool with
             row.append(t.partial_wait);
             row.append(t.partial_complete);
         }
+        if (with_higher) {
+            row.append(higher_json(t.higher));
+            row.append(t.higher_entry_allowed);
+            row.append(t.higher_exit_allowed);
+        }
         a.append(row);
     }
     return a;
 }
-QJsonObject result_json(const quant::SimResult &r, bool with_partial = true) {
+QJsonObject result_json(const quant::SimResult &r, bool with_partial = true, bool with_higher = true) {
     const auto &m = r.metrics;
     QJsonArray journal, times;
     for (const auto &e : r.journal)
@@ -238,7 +265,9 @@ QJsonObject result_json(const quant::SimResult &r, bool with_partial = true) {
         {"halted", r.halted},
         {"halt_reason", QString::fromStdString(r.halt_reason)}};
     if (!r.trace.empty())
-        object.insert("trace", trace_json(r.trace, with_partial));
+        object.insert("trace", trace_json(r.trace, with_partial, with_higher));
+    if (with_higher)
+        object.insert("higher", higher_json(r.higher));
     if (with_partial) {
         object.insert("partial_remaining", QString::number(r.partial_remaining));
         object.insert("partial_fills", r.metrics.partial_fills);
@@ -286,7 +315,7 @@ QByteArray encode_snapshot(const ReplaySnapshot &s, const QString &source, const
     quant::validate_bars(s.bars);
     const auto bars = bars_json(s.bars);
     const auto bytes = QJsonDocument(QJsonObject{{"format", "QuantPriceLiveSnapshot"},
-                                                 {"schema", 4},
+                                                 {"schema", 5},
                                                  {"engine", engine},
                                                  {"source", source},
                                                  {"name", name},
@@ -310,8 +339,10 @@ QString verify_snapshot(const QByteArray &bytes, const std::atomic<bool> &cancel
     const bool legacy = root["schema"] == 1 && root["engine"] == "qpl-single-backtest-v1";
     const bool legacy_two = root["schema"] == 2 && root["engine"] == "qpl-single-backtest-v2";
     const bool legacy_three = root["schema"] == 3 && root["engine"] == "qpl-single-backtest-v3";
+    const bool legacy_four = root["schema"] == 4 && root["engine"] == "qpl-single-backtest-v4";
     require(root.size() == 10 && root["format"] == "QuantPriceLiveSnapshot" &&
-            (legacy || legacy_two || legacy_three || (root["schema"] == 4 && root["engine"] == engine)));
+            (legacy || legacy_two || legacy_three || legacy_four ||
+             (root["schema"] == 5 && root["engine"] == engine)));
     for (const auto &key : {"name", "hypothesis", "source"})
         require(root[key].isString());
     require(!root["name"].toString().isEmpty() && root["name"].toString().size() <= 120 &&
@@ -352,8 +383,10 @@ QString verify_snapshot(const QByteArray &bytes, const std::atomic<bool> &cancel
     if (cancelled.load())
         return QStringLiteral("Проверка отменена.");
     require(root["reference"].isObject());
-    if (!same(root["reference"], result_json(actual, root["schema"].toInt() >= 4)))
-        return QStringLiteral("НЕ СОВПАЛО: эталон и повторный бэктест различаются. Проверьте версию модели и "
+    if (!same(root["reference"],
+              result_json(actual, root["schema"].toInt() >= 4, root["schema"].toInt() >= 5)))
+        return QStringLiteral("НЕ СОВПАЛО: эталон и повторный бэктест различаются. Проверьте "
+                              "версию модели и "
                               "файл. Данные и настройки рабочего исследования не изменены.");
     return QStringLiteral("СОВПАЛО: %1 свечей, %2 исполнений. Капитал, просадка, метрики и журнал "
                           "воспроизведены (допуск 1e-9 относительный + 1e-7 абсолютный). Проверена "

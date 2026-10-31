@@ -19,7 +19,28 @@ live::ReplaySnapshot example(int count = 180) {
     return s;
 }
 QByteArray encode(const QJsonObject &object) { return QJsonDocument(object).toJson(QJsonDocument::Compact); }
+QJsonObject legacy_without_higher(QJsonObject root) {
+    auto c = root["config"].toObject();
+    for (const auto *key : {"higher_factor", "higher_fast", "higher_slow", "higher_exit"})
+        c.remove(key);
+    root["config"] = c;
+    auto r = root["reference"].toObject();
+    r.remove("higher");
+    if (r.contains("trace")) {
+        auto trace = r["trace"].toArray();
+        for (int i = 0; i < trace.size(); ++i) {
+            auto row = trace[i].toArray();
+            while (row.size() > 21)
+                row.removeLast();
+            trace[i] = row;
+        }
+        r["trace"] = trace;
+    }
+    root["reference"] = r;
+    return root;
+}
 QJsonObject legacy_without_partial(QJsonObject root) {
+    root = legacy_without_higher(root);
     auto c = root["config"].toObject();
     c.remove("partial_target");
     c.remove("partial_fraction");
@@ -248,5 +269,49 @@ TEST_CASE("Partial-stage snapshot freezes quantity, fees and pending state") {
         c.remove("partial_fraction");
         bad["config"] = c;
         CHECK_THROWS(live::verify_snapshot(encode(bad), cancelled));
+    }
+}
+
+TEST_CASE("Schema four replays with explicit disabled higher filter") {
+    auto s = example();
+    s.reference = quant::backtest(s.bars, s.config, 0, true);
+    auto root =
+        legacy_without_higher(QJsonDocument::fromJson(live::encode_snapshot(s, "DEMO", "v4", {})).object());
+    root["schema"] = 4;
+    root["engine"] = "qpl-single-backtest-v4";
+    std::atomic<bool> cancelled{false};
+    CHECK(live::verify_snapshot(encode(root), cancelled).startsWith(QStringLiteral("СОВПАЛО:")));
+}
+TEST_CASE("Higher closed-hour snapshot reproduces and detects changed "
+          "confirmation state") {
+    auto s = example(5000);
+    for (std::size_t i = 0; i < s.bars.size(); ++i) {
+        s.bars[i].time = 20000LL * 86400000 - 10800000 + static_cast<long long>(i) * 3600000;
+        s.bars[i].end = s.bars[i].time + 3600000;
+    }
+    s.config.higher_factor = 4;
+    s.config.higher_fast = 2;
+    s.config.higher_slow = 5;
+    s.config.higher_confirm_exit = true;
+    s.reference = quant::backtest(s.bars, s.config, 0, true);
+    REQUIRE(s.reference.higher.ready);
+    const auto bytes = live::encode_snapshot(s, "DEMO H1", "Higher", {});
+    CHECK(bytes.size() < live::snapshot_byte_limit);
+    std::atomic<bool> cancelled{false};
+    CHECK(live::verify_snapshot(bytes, cancelled).startsWith(QStringLiteral("СОВПАЛО:")));
+    auto root = QJsonDocument::fromJson(bytes).object();
+    SUBCASE("tampered higher reference cannot report success") {
+        auto r = root["reference"].toObject();
+        auto higher = r["higher"].toArray();
+        higher[0] = false;
+        r["higher"] = higher;
+        root["reference"] = r;
+        CHECK(live::verify_snapshot(encode(root), cancelled).startsWith(QStringLiteral("НЕ СОВПАЛО:")));
+    }
+    SUBCASE("missing higher setting cannot inherit defaults") {
+        auto c = root["config"].toObject();
+        c.remove("higher_fast");
+        root["config"] = c;
+        CHECK_THROWS(live::verify_snapshot(encode(root), cancelled));
     }
 }

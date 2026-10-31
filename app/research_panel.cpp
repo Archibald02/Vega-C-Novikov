@@ -187,6 +187,9 @@ void journal_rows(QTableWidget *table, const quant::SimResult &result) {
 } // namespace
 QString execution_gate(const std::string &gate) {
     static const QMap<QString, QString> gates{
+        {"higher entry blocked", QStringLiteral("Вход не подтверждён закрытым старшим блоком")},
+        {"higher exit blocked",
+         QStringLiteral("Обычный выход не подтверждён старшим блоком; стоп и риск активны")},
         {"partial pending", QStringLiteral("Назначен частичный выход; оставшаяся позиция сохраняется")},
         {"halt", QStringLiteral("Аварийная остановка; новые входы запрещены")},
         {"session halt", QStringLiteral("Лимит убытка сессии; новые входы запрещены")},
@@ -975,6 +978,41 @@ QWidget *ResearchPanel::strategy_page() {
                        "при нехватке предыдущего объёма переносится только назначенный остаток. Это рост "
                        "цены без вычета комиссий; все издержки учитываются в деньгах.")));
     layout->addWidget(ui::fold(QStringLiteral("Плановый частичный выход"), partial));
+    auto *higher = new QWidget;
+    auto *hf = new QFormLayout(higher);
+    higher_factor_ = new QComboBox;
+    for (int factor : {0, 2, 3, 4, 6, 12, 24})
+        higher_factor_->addItem(
+            factor ? QStringLiteral("%1 часа/часов из H1").arg(factor) : QStringLiteral("Выключен"), factor);
+    higher_fast_ = integer(2, 2, 99);
+    higher_slow_ = integer(5, 3, 100);
+    higher_exit_ = new QCheckBox(QStringLiteral("Подтверждать обычный выход: быстрая SMA ниже медленной"));
+    hf->addRow(QStringLiteral("Старший блок (только часовые данные)"), higher_factor_);
+    hf->addRow(QStringLiteral("Быстрая SMA, старших блоков"), higher_fast_);
+    hf->addRow(QStringLiteral("Медленная SMA, старших блоков"), higher_slow_);
+    hf->addRow(higher_exit_);
+    hf->addRow(text(QStringLiteral("Вход требует готовую старшую SMA: быстрая > медленной. Блоки "
+                                   "выровнены от местной полуночи; берутся только полностью закрытые "
+                                   "блоки без пропусков. Это локальная агрегация H1, не отдельные "
+                                   "биржевые свечи. После разрыва новые подтверждения запрещены до "
+                                   "свежего полного блока. Стопы, риск, срок и частичный этап независимы. "
+                                   "На коротких сессиях большие блоки могут не сформироваться.")));
+    auto *higher_demo = new QPushButton(QStringLiteral("Открыть ДЕМО H1 + фильтр 4 часа (без сети)"));
+    hf->addRow(higher_demo);
+    connect(higher_demo, &QPushButton::clicked, this, [this] {
+        cancel_work();
+        demo(true);
+        higher_factor_->setCurrentIndex(3);
+    });
+    const auto higher_controls = [this] {
+        const bool enabled = higher_factor_->currentData().toInt() != 0;
+        higher_fast_->setEnabled(enabled);
+        higher_slow_->setEnabled(enabled);
+        higher_exit_->setEnabled(enabled);
+    };
+    connect(higher_factor_, &QComboBox::currentIndexChanged, this, [higher_controls] { higher_controls(); });
+    higher_controls();
+    layout->addWidget(ui::fold(QStringLiteral("Подтверждение закрытым старшим интервалом"), higher));
     auto *execution = new QWidget;
     auto *ef = new QFormLayout(execution);
     ef->addRow(QStringLiteral("Комиссия при покупке и продаже, %"), commission_);
@@ -1169,6 +1207,12 @@ quant::SimConfig ResearchPanel::settings() const {
     c.signal_delay = signal_delay_->value();
     c.partial_target_fraction = partial_target_->value() / 100;
     c.partial_exit_fraction = partial_fraction_->value() / 100;
+    c.higher_factor = higher_factor_->currentData().toInt();
+    c.higher_fast = higher_fast_->value();
+    c.higher_slow = higher_slow_->value();
+    c.higher_confirm_exit = higher_exit_->isChecked();
+    if (c.higher_factor && period_->currentIndex() != 2)
+        throw std::invalid_argument("Higher filter requires H1 data");
     return c;
 }
 std::vector<quant::Bar> ResearchPanel::selected_bars() const {
@@ -1194,7 +1238,8 @@ void ResearchPanel::calculate() {
         config = settings();
     } catch (const std::exception &) {
         evaluate_holdout_ = false;
-        status_->setText(QStringLiteral("Расчёт не запущен. Проверьте SMA (быстрая меньше медленной), баланс "
+        status_->setText(QStringLiteral("Расчёт не запущен. Для старшего фильтра нужны H1, быстрая SMA "
+                                        "меньше медленной. Проверьте также обычные SMA, баланс "
                                         "скобок и глубину формул до 3."));
         return;
     }
@@ -1396,6 +1441,23 @@ void ResearchPanel::explain_bar(int index) {
                        .arg(t.partial_remaining)
                        .arg(t.partial_wait)
                        .arg(t.partial_complete ? QStringLiteral("да") : QStringLiteral("нет"));
+        if (r.explained_config.higher_factor) {
+            lines << QStringLiteral("Старший масштаб: %1 ч; полный прогрев: %2; блоков: %3; "
+                                    "собирается %4/%1.\nПоследнее закрытие: %5; SMA %6 / "
+                                    "%7. Вход разрешён: %8; обычный выход разрешён: %9. "
+                                    "Разрывов/смен сессии: %10; отброшено неполных блоков: "
+                                    "%11.")
+                         .arg(r.explained_config.higher_factor)
+                         .arg(t.higher.ready ? QStringLiteral("да") : QStringLiteral("нет"))
+                         .arg(t.higher.completed)
+                         .arg(t.higher.progress)
+                         .arg(t.higher.last_end ? stamp(t.higher.last_end) : QStringLiteral("нет"))
+                         .arg(fmt(t.higher.fast), fmt(t.higher.slow))
+                         .arg(t.higher_entry_allowed ? QStringLiteral("да") : QStringLiteral("нет"))
+                         .arg(t.higher_exit_allowed ? QStringLiteral("да") : QStringLiteral("нет"))
+                         .arg(t.higher.breaks)
+                         .arg(t.higher.discarded);
+        }
         for (int i = 0; i < t.fill_count; ++i) {
             const auto &f = t.fills[i];
             lines << QStringLiteral(
@@ -1594,27 +1656,34 @@ void ResearchPanel::present(const LabResult &r) {
     price_chart_->set_markers(markers);
     update_journey();
 }
-void ResearchPanel::demo() {
+void ResearchPanel::demo(bool hourly) {
     data_.clear();
     selected_->clear();
     diagnostics_.clear();
     synthetic_ = true;
     source_dirty_ = false;
     local_project_ = false;
-    period_->setCurrentIndex(1);
+    period_->setCurrentIndex(hourly ? 2 : 1);
+    if (!hourly)
+        higher_factor_->setCurrentIndex(0);
     const QStringList names{"SBER", "GAZP", "LKOH"};
     for (int k = 0; k < 3; ++k) {
         auto date = QDate::currentDate().addDays(-550);
         for (int i = 0; i < 360;) {
             date = date.addDays(1);
-            if (date.dayOfWeek() > 5)
+            if (!hourly && date.dayOfWeek() > 5)
                 continue;
-            const auto start = QDateTime(date, QTime(0, 0), QTimeZone("Europe/Moscow")).toMSecsSinceEpoch();
+            const auto start =
+                hourly ? QDateTime(QDate::currentDate().addDays(-20), QTime(0, 0), QTimeZone("Europe/Moscow"))
+                                 .toMSecsSinceEpoch() +
+                             i * 3600000LL
+                       : QDateTime(date, QTime(0, 0), QTimeZone("Europe/Moscow")).toMSecsSinceEpoch();
             const double open = (100 + k * 70) *
                                 std::exp(.0005 * i + .035 * std::sin(i * .11 + k) + .009 * std::sin(i * .73)),
                          close = open * (1 + .005 * std::sin(i * .41 + k));
-            data_[names[k]].push_back({start, start + 86400000, open, std::max(open, close) * 1.006,
-                                       std::min(open, close) * .994, close, 10000.0 + (i % 17) * 1000,
+            data_[names[k]].push_back({start, start + (hourly ? 3600000 : 86400000), open,
+                                       std::max(open, close) * 1.006, std::min(open, close) * .994, close,
+                                       10000.0 + (i % 17) * 1000,
                                        QDateTime::fromMSecsSinceEpoch(start)
                                            .toTimeZone(QTimeZone("Europe/Moscow"))
                                            .offsetFromUtc()});
@@ -1623,13 +1692,16 @@ void ResearchPanel::demo() {
         selected_->addItem(names[k]);
     }
     selected_->setCurrentIndex(0);
-    quality_->setText(QStringLiteral("ДЕМО: 3×360 синтетических закрытых дневных свечей, условный календарь "
-                                     "Пн–Пт. Это не биржевые данные."));
+    quality_->setText(hourly ? QStringLiteral("ДЕМО H1: 3×360 синтетических часовых свечей, "
+                                              "непрерывная условная сессия 24×7. Это не "
+                                              "биржевой календарь и не реальные данные.")
+                             : QStringLiteral("ДЕМО: 3×360 синтетических закрытых дневных свечей, "
+                                              "условный календарь Пн–Пт. Это не биржевые данные."));
     result_current_ = false;
     update_metadata();
     update_journey();
-    status_->setText(
-        QStringLiteral("ДЕМО загружено. Нажмите «Проверить данные», затем следуйте шагам слева."));
+    status_->setText(QStringLiteral("ДЕМО загружено. Нажмите «Проверить данные», "
+                                    "затем следуйте шагам слева."));
 }
 void ResearchPanel::start_paper() {
     paper_timer_.stop();
@@ -1718,6 +1790,15 @@ void ResearchPanel::update_paper() {
         QStringLiteral("\nЧастичных исполнений: %1; назначенный остаток частичного этапа: %2 акций.")
             .arg(r.metrics.partial_fills)
             .arg(r.partial_remaining));
+    if (r.higher.completed || r.higher.progress || r.higher.breaks)
+        paper_status_->setText(paper_status_->text() +
+                               QStringLiteral("\nСтарший интервал: %1; SMA %2 / %3; полных блоков "
+                                              "%4, разрывов %5.")
+                                   .arg(r.higher.ready ? QStringLiteral("готов")
+                                                       : QStringLiteral("ожидание полного блока / прогрев"))
+                                   .arg(fmt(r.higher.fast), fmt(r.higher.slow))
+                                   .arg(r.higher.completed)
+                                   .arg(r.higher.breaks));
     paper_chart_->set_lines(
         {{QStringLiteral("Виртуальный капитал"), QColor("#39d2b0"), points(r.equity), false}},
         live_paper_ ? QStringLiteral("Новые закрытые свечи MOEX • задержанный тренажёр")
@@ -1886,6 +1967,60 @@ bool ResearchPanel::self_test() {
     status_->setText(
         QStringLiteral("ДЕМО лаборатории • проверки расчёта, отмены и виртуального счёта завершены"));
     return r.correlation.common_returns == 359 && r.walk.folds.size() > 0 && paper_ &&
-           paper_->result().halted && features_table_->rowCount() == 100;
+           paper_->result().halted && features_table_->rowCount() == 100 && higher_test();
+}
+bool ResearchPanel::higher_test() {
+    demo(true);
+    higher_factor_->setCurrentIndex(1);
+    higher_fast_->setValue(2);
+    higher_slow_->setValue(3);
+    higher_exit_->setChecked(true);
+    const auto saved = configuration();
+    if (!apply_configuration(saved) || settings().higher_factor != 2 || !settings().higher_confirm_exit)
+        return false;
+    auto legacy = saved;
+    auto values = legacy.value("values").toObject();
+    for (const auto *key : {"study_higher_factor", "study_higher_fast", "study_higher_slow", "study_higher_exit"})
+        values.remove(key);
+    legacy["values"] = values;
+    if (!apply_configuration(legacy) || settings().higher_factor || settings().higher_fast != 2 ||
+        settings().higher_slow != 5 || settings().higher_confirm_exit || !apply_configuration(saved))
+        return false;
+    auto bad = saved;
+    values = saved.value("values").toObject();
+    values["study_period"] = 1;
+    bad["values"] = values;
+    if (apply_configuration(bad) || configuration() != saved) return false;
+    QEventLoop loop;
+    connect(worker_, &QFutureWatcher<LabResult>::finished, &loop, &QEventLoop::quit);
+    calculate();
+    QTimer::singleShot(10000, &loop, &QEventLoop::quit);
+    loop.exec();
+    if (worker_->isRunning() || !worker_->result().error.isEmpty() || !result_current_ ||
+        !last_result_.simulation.higher.ready || last_result_.simulation.trace.empty())
+        return false;
+    for (const auto &t : last_result_.simulation.trace)
+        if (t.higher.last_end > t.time + 3600000)
+            return false;
+    explain_bar(100);
+    const auto frozen = explanation_->text();
+    higher_fast_->setValue(3);
+    explain_bar(100);
+    if (explanation_->text() != frozen)
+        return false;
+    higher_fast_->setValue(2);
+    if (!report_html().contains(QStringLiteral("Старший интервал")))
+        return false;
+    start_paper();
+    if (!paper_ || paper_bars_.size() < 80)
+        return false;
+    for (int i = 0; i < 79; ++i)
+        paper_->step(paper_bars_[paper_index_++]);
+    step_paper();
+    if (!paper_->result().higher.ready)
+        return false;
+    stop_paper(QStringLiteral("Тест старшего интервала"));
+    status_->setText(QStringLiteral("СИНТЕТИЧЕСКОЕ ДЕМО H1 • старший фильтр 2 часа проверен"));
+    return true;
 }
 } // namespace live

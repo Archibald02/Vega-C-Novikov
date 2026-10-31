@@ -50,6 +50,10 @@ void validate_config(const SimConfig &c) {
         c.max_holding_bars > 5000 || c.partial_target_fraction > 10 || c.partial_exit_fraction <= 0 ||
         c.partial_exit_fraction >= 1)
         throw std::invalid_argument("Simulation setting out of range");
+    if ((c.higher_factor != 0 && c.higher_factor != 2 && c.higher_factor != 3 && c.higher_factor != 4 &&
+         c.higher_factor != 6 && c.higher_factor != 12 && c.higher_factor != 24) ||
+        c.higher_fast < 2 || c.higher_slow > 100 || c.higher_fast >= c.higher_slow)
+        throw std::invalid_argument("Higher timeframe setting out of range");
     for (const auto &group : {c.strategy.entry, c.strategy.exit}) {
         if (!valid_rule_expression(group))
             throw std::invalid_argument("Invalid bounded rule expression");
@@ -538,6 +542,8 @@ PaperEngine::PaperEngine(const SimConfig &c, bool capture_trace)
       cash_(c.initial_cash), peak_(c.initial_cash), session_equity_(c.initial_cash),
       capture_trace_(capture_trace) {
     validate_config(c);
+    if (c.higher_factor)
+        higher_.emplace(c.higher_factor, c.higher_fast, c.higher_slow);
     current_.fill(unavailable());
     previous_ = current_;
     result_.equity.push_back(cash_);
@@ -550,10 +556,17 @@ void PaperEngine::warmup(const Bar &b) {
         throw std::invalid_argument("Warmup chronology");
     if (!result_.times.empty())
         throw std::logic_error("Warmup after trading");
+    if (higher_)
+        higher_->validate_next(b);
     previous_ = current_;
     current_ = features_.push(b);
-    entry_streak_ =
-        evaluate(config_.strategy.entry, previous_, current_) ? std::min(50, entry_streak_ + 1) : 0;
+    if (higher_)
+        higher_->push(b);
+    const bool higher_entry =
+        !higher_ || (higher_->state().ready && higher_->state().fast > higher_->state().slow);
+    entry_streak_ = evaluate(config_.strategy.entry, previous_, current_) && higher_entry
+                        ? std::min(50, entry_streak_ + 1)
+                        : 0;
     last_ = b;
 }
 void PaperEngine::arm_from_warmup() {
@@ -751,6 +764,8 @@ void PaperEngine::step(const Bar &b) {
     validate_bars({b});
     if (last_.time && (b.time <= last_.time || b.time < last_.end))
         throw std::invalid_argument("Non-increasing engine time");
+    if (higher_)
+        higher_->validate_next(b);
     closed_this_bar_ = false;
     if (capture_trace_) {
         trace_ = {};
@@ -804,17 +819,24 @@ void PaperEngine::step(const Bar &b) {
     }
     previous_ = current_;
     current_ = features_.push(b);
+    if (higher_)
+        higher_->push(b);
     last_ = b;
     mark(b);
     const double equity = result_.equity.back();
     const bool entry_condition = evaluate(config_.strategy.entry, previous_, current_),
                exit_condition = evaluate(config_.strategy.exit, previous_, current_);
+    const bool higher_entry =
+        !higher_ || (higher_->state().ready && higher_->state().fast > higher_->state().slow);
+    const bool higher_exit = !higher_ || !config_.higher_confirm_exit ||
+                             (higher_->state().ready && higher_->state().fast < higher_->state().slow);
     if (units_) {
         ++held_bars_;
-        exit_streak_ = exit_condition ? std::min(50, exit_streak_ + 1) : 0;
+        exit_streak_ = exit_condition && higher_exit ? std::min(50, exit_streak_ + 1) : 0;
         entry_streak_ = 0;
     } else {
-        entry_streak_ = !cooldown_remaining_ && entry_condition ? std::min(50, entry_streak_ + 1) : 0;
+        entry_streak_ =
+            !cooldown_remaining_ && entry_condition && higher_entry ? std::min(50, entry_streak_ + 1) : 0;
         exit_streak_ = 0;
     }
     if (equity <= 0 || result_.drawdowns.back() >= config_.max_drawdown) {
@@ -883,14 +905,20 @@ void PaperEngine::step(const Bar &b) {
         trace_.partial_remaining = partial_remaining_;
         trace_.partial_wait = std::max(0, partial_wait_);
         trace_.partial_complete = partial_complete_;
+        if (higher_)
+            trace_.higher = higher_->state();
+        trace_.higher_entry_allowed = higher_entry;
+        trace_.higher_exit_allowed = higher_exit;
         trace_.gate = halted_                                         ? "halt"
                       : session_halted_                               ? "session halt"
                       : pending_exit_                                 ? "exit pending"
                       : pending_entry_                                ? "entry pending"
                       : partial_remaining_ > 0                        ? "partial pending"
+                      : units_ && exit_condition && !higher_exit      ? "higher exit blocked"
                       : units_                                        ? "holding"
                       : cooldown_remaining_                           ? "cooldown"
                       : entries_today_ >= config_.max_entries_per_day ? "entry limit"
+                      : entry_condition && !higher_entry              ? "higher entry blocked"
                       : entry_condition                               ? "confirmation"
                                                                       : "no entry condition";
         result_.trace.push_back(std::move(trace_));
@@ -927,6 +955,8 @@ SimResult PaperEngine::result() const {
     out.cash = cash_;
     out.units = units_;
     out.partial_remaining = partial_remaining_;
+    if (higher_)
+        out.higher = higher_->state();
     out.unrealized = units_ ? units_ * last_.close - cost_basis_ : 0;
     out.halted = halted_;
     auto &m = out.metrics;
@@ -988,6 +1018,7 @@ SimResult buy_hold(const std::vector<Bar> &bars, const SimConfig &config) {
     baseline.entry_confirmation = baseline.exit_confirmation = 1;
     baseline.cooldown_bars = baseline.max_holding_bars = 0;
     baseline.partial_target_fraction = 0;
+    baseline.higher_factor = 0;
     baseline.stop_fraction = baseline.target_fraction = 0;
     baseline.max_drawdown = baseline.daily_loss = 1;
     baseline.participation = 0;

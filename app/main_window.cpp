@@ -52,7 +52,7 @@ QDoubleSpinBox *number(double value, double low = 0.01, double high = 1e12, int 
 }
 } // namespace
 MainWindow::MainWindow(bool test_mode) : test_mode_(test_mode) {
-    setWindowTitle(QStringLiteral("Quant Price Live 6.5 • Российские акции"));
+    setWindowTitle(QStringLiteral("Quant Price Live 6.6 • Российские акции"));
     resize(1280, 860);
     setMinimumSize(960, 640);
     base_style_ = R"(
@@ -80,7 +80,7 @@ MainWindow::MainWindow(bool test_mode) : test_mode_(test_mode) {
     layout->setContentsMargins(20, 16, 20, 12);
     layout->setSpacing(10);
     auto *heading = new QHBoxLayout;
-    heading->addWidget(label("QUANT / PRICE LIVE 6.5", "font-size:23px;font-weight:700;letter-spacing:2px;"));
+    heading->addWidget(label("QUANT / PRICE LIVE 6.6", "font-size:23px;font-weight:700;letter-spacing:2px;"));
     heading->addStretch();
     heading->addWidget(
         label(QStringLiteral("Учебный терминал • только виртуальные сделки"), "color:#85a1b9;"));

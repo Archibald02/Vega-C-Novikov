@@ -73,6 +73,9 @@ class ResearchPanel : public QWidget {
     QSpinBox *explanation_bar_ = nullptr;
     QSpinBox *entry_confirmation_, *exit_confirmation_, *cooldown_bars_, *max_holding_bars_, *signal_delay_;
     QDoubleSpinBox *partial_target_, *partial_fraction_;
+    QComboBox *higher_factor_;
+    QSpinBox *higher_fast_, *higher_slow_;
+    QCheckBox *higher_exit_;
     QLabel *explanation_ = nullptr;
     void next_step();
     bool journey_test();
@@ -110,6 +113,7 @@ class ResearchPanel : public QWidget {
     void start_live_paper();
     void fetch_reference();
     bool workbench_test();
+    bool higher_test();
     QDateEdit *from_, *till_;
     QCheckBox *custom_dates_, *reserve_, *expert_, *save_account_, *save_cash_, *manual_metadata_;
     QSpinBox *gap_;
@@ -163,7 +167,7 @@ class ResearchPanel : public QWidget {
     void calculate();
     void present(const LabResult &result);
     void show_distribution();
-    void demo();
+    void demo(bool hourly = false);
     void start_paper();
     void step_paper();
     void update_paper();
