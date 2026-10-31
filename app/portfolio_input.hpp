@@ -7,5 +7,7 @@ struct PortfolioInput {
     std::vector<quant::PortfolioAsset> assets;
     QString source;
     bool synthetic = false, metadata_known = false;
+    bool moex_live = false; // transient provenance, not persisted
+    int interval = 0;
 };
 } // namespace live

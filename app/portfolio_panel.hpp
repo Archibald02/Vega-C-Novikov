@@ -1,5 +1,6 @@
 #pragma once
 #include "portfolio_input.hpp"
+#include "portfolio_live_feed.hpp"
 #include "portfolio_project.hpp"
 #include "ui_helpers.hpp"
 #include "visual_chart.hpp"
@@ -21,6 +22,9 @@ struct PortfolioReplay {
     QString source;
     std::size_t index = 0;
     bool failed = false;
+    bool live = false;
+    int interval = 0;
+    std::unique_ptr<quant::PortfolioStreamBuffer> buffer;
 };
 struct PortfolioOutcome {
     quant::PortfolioResult result, baseline;
@@ -49,7 +53,7 @@ class PortfolioPanel : public QWidget {
     void demo();
     void invalidate();
     void equal_weights();
-    void calculate(bool prepare_replay = false);
+    void calculate(bool prepare_replay = false, bool prepare_live = false);
     void busy(bool on);
     void present(const PortfolioOutcome &outcome);
     PortfolioProject project() const;
@@ -61,6 +65,8 @@ class PortfolioPanel : public QWidget {
     void replay_end(bool notify = true);
     void replay_controls();
     void replay_present();
+    void live_frames(const std::vector<std::vector<quant::Bar>> &frames);
+    void live_failure(const QString &message);
     struct AssetRow {
         QCheckBox *enabled;
         QComboBox *rules;
@@ -73,6 +79,7 @@ class PortfolioPanel : public QWidget {
     QTableWidget *assets_, *positions_, *journal_;
     QPushButton *import_, *demo_, *equal_, *run_, *cancel_, *save_, *open_;
     QPushButton *replay_start_, *replay_step_, *replay_play_, *replay_stop_, *replay_end_;
+    QPushButton *live_start_;
     QLabel *replay_status_;
     QLabel *source_, *status_, *summary_;
     QDoubleSpinBox *capital_, *invested_, *weight_limit_, *group_limit_, *commission_, *fixed_, *spread_,
@@ -86,5 +93,6 @@ class PortfolioPanel : public QWidget {
     std::shared_ptr<std::atomic<bool>> cancelled_;
     std::shared_ptr<PortfolioReplay> replay_;
     QTimer replay_timer_;
+    std::unique_ptr<PortfolioLiveFeed> live_feed_;
 };
 } // namespace live

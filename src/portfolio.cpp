@@ -330,12 +330,13 @@ void PortfolioAccount::arm_from_warmup() {
     s.log(s.last_end, "", 0, 0, 0, "TARGET_NEXT_OPEN");
     s.armed = true;
 }
-void PortfolioAccount::request_stop() {
+void PortfolioAccount::request_stop(const std::string &reason) {
+    require(reason == "MANUAL_STOP" || reason == "DATA_ERROR" || reason == "SESSION_LIMIT");
     auto &s = *state_;
     if (s.r.halted)
         return;
     s.r.halted = true;
-    s.r.halt_reason = "MANUAL_STOP";
+    s.r.halt_reason = reason;
     std::fill(s.target.begin(), s.target.end(), 0);
     s.pending = true;
     s.log(s.last_end, "", 0, 0, 0, s.r.halt_reason);

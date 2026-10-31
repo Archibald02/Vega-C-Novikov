@@ -1127,6 +1127,8 @@ PortfolioInput ResearchPanel::portfolio_input() const {
         throw std::invalid_argument("No training data");
     const auto cutoff = primary[count - 1].end;
     PortfolioInput out;
+    out.moex_live = !synthetic_ && !local_project_ && !reserve_->isChecked();
+    out.interval = period_->currentIndex() == 2 ? 60 : 24;
     out.synthetic = synthetic_ && !local_project_;
     out.metadata_known = true;
     out.source = local_project_ ? QStringLiteral("ЛОКАЛЬНЫЙ ПРОЕКТ • происхождение не перепроверено")

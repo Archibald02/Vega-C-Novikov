@@ -7,6 +7,7 @@
 #include <QHeaderView>
 #include <QScrollArea>
 #include <QTemporaryDir>
+#include <QTimeZone>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrentRun>
@@ -67,6 +68,8 @@ QString reason(const std::string &s) {
         {"SELL_BLOCKED_FEE", QStringLiteral("Выход не исполнен: не хватает средств на комиссию")},
         {"SELL_BLOCKED_PRICE", QStringLiteral("Выход не исполнен: после округления нет положительной цены")},
         {"RISK_EXIT", QStringLiteral("Выход после остановки риска")},
+        {"DATA_ERROR", QStringLiteral("Остановка: ошибка или изменение закрытых данных")},
+        {"SESSION_LIMIT", QStringLiteral("Остановка: достигнут предел сеанса")},
         {"DRAWDOWN", QStringLiteral("Лимит просадки: выход при следующем общем открытии")},
         {"DAILY_LOSS", QStringLiteral("Лимит дневного убытка по МСК: выход при следующем общем открытии")},
         {"MANUAL_STOP", QStringLiteral("Учебная ручная остановка: выход при следующем общем открытии")}};
@@ -158,11 +161,15 @@ PortfolioPanel::PortfolioPanel(QWidget *parent) : QWidget(parent) {
     replay_play_ = new QPushButton(QStringLiteral("Воспроизводить"));
     replay_stop_ = new QPushButton(QStringLiteral("Аварийный стоп"));
     replay_end_ = new QPushButton(QStringLiteral("Завершить сеанс"));
+    live_start_ = new QPushButton(QStringLiteral("Новые свечи MOEX • задержка"));
+    live_start_->setToolTip(QStringLiteral("Свежая история MOEX без скрытого резерва; минимум 40 общих "
+                                           "часовых или дневных свечей. ДЕМО и файлы не подключаются."));
     replay_actions->addWidget(replay_start_, 0, 0);
     replay_actions->addWidget(replay_step_, 0, 1);
     replay_actions->addWidget(replay_play_, 0, 2);
     replay_actions->addWidget(replay_stop_, 1, 0);
     replay_actions->addWidget(replay_end_, 1, 1);
+    replay_actions->addWidget(live_start_, 1, 2);
     layout->addLayout(replay_actions);
     replay_status_ = ui::paragraph({});
     replay_status_->setTextFormat(Qt::PlainText);
@@ -226,18 +233,28 @@ PortfolioPanel::PortfolioPanel(QWidget *parent) : QWidget(parent) {
     layout->addStretch();
     worker_ = new QFutureWatcher<PortfolioOutcome>(this);
     file_worker_ = new QFutureWatcher<PortfolioFileOutcome>(this);
+    live_feed_ = std::make_unique<PortfolioLiveFeed>();
+    live_feed_->on_frames = [this](const auto &frames) { live_frames(frames); };
+    live_feed_->on_fatal = [this](const QString &s) { live_failure(s); };
+    live_feed_->on_status = [this](const QString &s) { status_->setText(s); };
     guard_ = new ui::WheelGuard(this);
     ui::prepare_controls(this);
     connect(demo_, &QPushButton::clicked, this, [this] { demo(); });
     connect(equal_, &QPushButton::clicked, this, [this] { equal_weights(); });
     connect(run_, &QPushButton::clicked, this, [this] { calculate(); });
     connect(replay_start_, &QPushButton::clicked, this, [this] { calculate(true); });
+    connect(live_start_, &QPushButton::clicked, this, [this] { calculate(true, true); });
     connect(replay_step_, &QPushButton::clicked, this, [this] { replay_step(); });
     connect(replay_stop_, &QPushButton::clicked, this, [this] { replay_stop(); });
     connect(replay_end_, &QPushButton::clicked, this, [this] { replay_end(); });
     replay_timer_.setInterval(700);
     connect(&replay_timer_, &QTimer::timeout, this, [this] { replay_step(); });
     connect(replay_play_, &QPushButton::clicked, this, [this] {
+        if (replay_ && replay_->live) {
+            live_feed_->pause(!live_feed_->paused());
+            replay_present();
+            return;
+        }
         if (replay_timer_.isActive())
             replay_timer_.stop();
         else if (replay_ && replay_->index < replay_->schedule.frames.size())
@@ -279,6 +296,8 @@ PortfolioPanel::PortfolioPanel(QWidget *parent) : QWidget(parent) {
             invalidate();
             replay_ = std::move(out.replay);
             busy(true);
+            if (replay_->live)
+                live_feed_->start(std::move(replay_->buffer), replay_->interval);
             replay_present();
             return;
         }
@@ -304,6 +323,7 @@ PortfolioPanel::PortfolioPanel(QWidget *parent) : QWidget(parent) {
     replay_controls();
 }
 PortfolioPanel::~PortfolioPanel() {
+    live_feed_->stop();
     if (cancelled_)
         cancelled_->store(true);
 }
@@ -598,9 +618,16 @@ void PortfolioPanel::project_file(bool save, QString path) {
         return out;
     }));
 }
-void PortfolioPanel::calculate(bool prepare_replay) {
+void PortfolioPanel::calculate(bool prepare_replay, bool prepare_live) {
     if (working() || input_.assets.empty())
         return;
+    if (prepare_live &&
+        (!input_.moex_live || input_.synthetic || (input_.interval != 60 && input_.interval != 24))) {
+        status_->setText(QStringLiteral(
+            "Для новых свечей отключите скрытый резерв, загрузите свежую историю "
+            "MOEX в «Исследовании» и импортируйте её заново. ДЕМО и локальные проекты остаются архивными."));
+        return;
+    }
     const auto c = project().config;
     std::vector<quant::PortfolioAsset> selected;
     double sum = 0;
@@ -674,21 +701,59 @@ void PortfolioPanel::calculate(bool prepare_replay) {
     cancelled_ = std::make_shared<std::atomic<bool>>(false);
     const auto flag = cancelled_;
     const auto source = source_->text();
+    const auto interval = input_.interval;
     busy(true);
     status_->setText(QStringLiteral("Согласуем общие интервалы и считаем единый счёт в фоне…"));
-    worker_->setFuture(QtConcurrent::run([selected = std::move(selected), c, flag, source,
-                                          prepare_replay]() mutable {
+    worker_->setFuture(QtConcurrent::run([selected = std::move(selected), c, flag, source, prepare_replay,
+                                          prepare_live, interval]() mutable {
         PortfolioOutcome out;
         out.source = source;
         try {
             if (prepare_replay) {
+                const auto now = QDateTime::currentMSecsSinceEpoch();
+                if (prepare_live)
+                    for (auto &a : selected)
+                        a.bars.erase(
+                            std::remove_if(a.bars.begin(), a.bars.end(),
+                                           [now](const auto &b) { return b.end > now - 20 * 60000; }),
+                            a.bars.end());
                 auto replay = std::make_shared<PortfolioReplay>();
                 replay->schedule = quant::portfolio_schedule(selected);
                 if (flag->load())
                     return out;
                 replay->account = std::make_unique<quant::PortfolioAccount>(selected, c);
-                replay->baseline = std::make_unique<quant::PortfolioAccount>(
-                    quant::portfolio_baseline_account(std::move(selected), c));
+                replay->baseline =
+                    std::make_unique<quant::PortfolioAccount>(quant::portfolio_baseline_account(selected, c));
+                if (prepare_live) {
+                    const auto &frames = replay->schedule.frames;
+                    const auto &last = frames.back()[0];
+                    if (frames.size() < 40 || now - last.end > 7 * 86400000LL)
+                        throw std::invalid_argument("Fresh warmup required");
+                    const auto begin = QDateTime::fromMSecsSinceEpoch(last.time, QTimeZone("Europe/Moscow"))
+                                           .date()
+                                           .addDays(-1)
+                                           .startOfDay(QTimeZone("Europe/Moscow"))
+                                           .toMSecsSinceEpoch();
+                    replay->buffer = std::make_unique<quant::PortfolioStreamBuffer>(
+                        selected, last.time, last.end, begin, interval);
+                    for (const auto &frame : frames) {
+                        if (flag->load())
+                            return out;
+                        replay->account->warmup(frame);
+                        replay->baseline->warmup(frame);
+                    }
+                    replay->account->arm_from_warmup();
+                    replay->baseline->arm_from_warmup();
+                    replay->schedule.frames.clear();
+                    replay->schedule.frames.shrink_to_fit();
+                    replay->live = true;
+                    replay->interval = interval;
+                    replay->source =
+                        QStringLiteral("MOEX • НОВЫЕ ЗАКРЫТЫЕ СВЕЧИ • ЗАДЕРЖКА • "
+                                       "виртуальное ретроспективное исполнение, не доступная сейчас цена");
+                    out.replay = std::move(replay);
+                    return out;
+                }
                 replay->source = QStringLiteral("ПРОИГРЫВАНИЕ ИСТОРИИ • ") + source;
                 out.replay = std::move(replay);
                 return out;
@@ -696,9 +761,11 @@ void PortfolioPanel::calculate(bool prepare_replay) {
             out.result = quant::portfolio_backtest(selected, c, flag.get());
             out.baseline = quant::portfolio_baseline(std::move(selected), c, flag.get());
         } catch (const std::exception &) {
-            out.error = QStringLiteral("Расчёт не выполнен. Проверьте лоты, шаги, пределы издержек и "
-                                       "наличие хотя бы "
-                                       "двух точных общих интервалов. Отсутствующие свечи не заполняются.");
+            out.error =
+                QStringLiteral("Расчёт не выполнен. Проверьте лоты, шаги, пределы издержек и "
+                               "наличие хотя бы "
+                               "двух точных общих интервалов. Для новых свечей нужны ≥40 общих "
+                               "свечей прогрева и общий конец не старше 7 дней. Пропуски не заполняются.");
         }
         return out;
     }));
@@ -785,6 +852,9 @@ void PortfolioPanel::present(const PortfolioOutcome &out) {
 bool PortfolioPanel::self_test() {
     demo();
     if (input_.assets.size() != 3 || rows_.size() != 3)
+        return false;
+    live_start_->click();
+    if (worker_->isRunning() || replay_ || live_feed_->active())
         return false;
     auto wait = [this] {
         QEventLoop loop;
@@ -917,6 +987,38 @@ bool PortfolioPanel::self_test() {
         return false;
     clear_private_state();
     if (replay_ || replay_timer_.isActive() || !input_.assets.empty() || positions_->rowCount())
+        return false;
+    demo();
+    auto p = project();
+    auto schedule = quant::portfolio_schedule(p.input.assets);
+    auto test_live = std::make_shared<PortfolioReplay>();
+    test_live->account = std::make_unique<quant::PortfolioAccount>(p.input.assets, p.config);
+    test_live->baseline = std::make_unique<quant::PortfolioAccount>(
+        quant::portfolio_baseline_account(p.input.assets, p.config));
+    for (int i = 0; i < 40; ++i) {
+        test_live->account->warmup(schedule.frames[i]);
+        test_live->baseline->warmup(schedule.frames[i]);
+    }
+    test_live->account->arm_from_warmup();
+    test_live->baseline->arm_from_warmup();
+    test_live->live = true;
+    test_live->source = QStringLiteral("ТЕСТ • синтетическая доставка закрытых интервалов");
+    test_live->schedule.excluded = schedule.excluded;
+    replay_ = std::move(test_live);
+    busy(true);
+    live_frames({schedule.frames[40]});
+    if (replay_->index != 1 || !replay_->account->result().fills || replay_step_->isEnabled())
+        return false;
+    replay_stop_->click();
+    live_frames({schedule.frames[41]});
+    for (const auto &position : replay_->account->result().positions)
+        if (position.units)
+            return false;
+    live_failure(QStringLiteral("Тестовая ошибка данных"));
+    if (!replay_->failed || live_feed_->active() || replay_play_->isEnabled())
+        return false;
+    clear_private_state();
+    if (replay_ || live_feed_->active() || !input_.assets.empty() || positions_->rowCount())
         return false;
     demo();
     run_->click();

@@ -2,12 +2,15 @@
 namespace live {
 void PortfolioPanel::replay_controls() {
     const bool active = static_cast<bool>(replay_);
-    const bool more = active && !replay_->failed && replay_->index < replay_->schedule.frames.size();
+    const bool live = active && replay_->live;
+    const bool more = active && !live && !replay_->failed && replay_->index < replay_->schedule.frames.size();
     replay_start_->setEnabled(!working() && !input_.assets.empty());
+    live_start_->setEnabled(!working() && !input_.assets.empty());
     replay_step_->setEnabled(more && !replay_timer_.isActive());
-    replay_play_->setEnabled(more);
-    replay_play_->setText(replay_timer_.isActive() ? QStringLiteral("Пауза")
-                                                   : QStringLiteral("Воспроизводить"));
+    replay_play_->setEnabled(live ? !replay_->failed && live_feed_->active() : more);
+    replay_play_->setText(
+        live ? (live_feed_->paused() ? QStringLiteral("Продолжить опрос") : QStringLiteral("Пауза опроса"))
+             : (replay_timer_.isActive() ? QStringLiteral("Пауза") : QStringLiteral("Воспроизводить")));
     replay_stop_->setEnabled(active && !replay_->account->halted());
     replay_end_->setEnabled(active);
 }
@@ -21,6 +24,28 @@ void PortfolioPanel::replay_present() {
         out.result.excluded = replay_->schedule.excluded;
         out.source = replay_->source;
         present(out);
+    }
+    if (replay_->live) {
+        replay_status_->setText(
+            QStringLiteral(
+                "MOEX • ЗАДЕРЖАННЫЙ ВИРТУАЛЬНЫЙ СЧЁТ • новых общих свечей: %1 / 5000. "
+                "История использована только для прогрева. Опрос: %2. Входы: %3. Исполнение моделируется по "
+                "уже "
+                "прошедшему открытию следующего закрытого интервала, это не доступная сейчас цена. Счёт не "
+                "сохраняется; завершение сеанса не продаёт позиции. Для выхода после стопа нужен новый общий "
+                "интервал; на паузе возобновите опрос. Исключённые интервалы в таблице — из прогрева.")
+                .arg(replay_->index)
+                .arg(live_feed_->paused() ? QStringLiteral("пауза")
+                     : replay_->failed    ? QStringLiteral("ошибка")
+                                          : QStringLiteral("раз в минуту"))
+                .arg(replay_->account->halted() ? QStringLiteral("запрещены")
+                                                : QStringLiteral("разрешены моделью")));
+        if (!replay_->failed)
+            status_->setText(QStringLiteral("Ожидание нового общего закрытого интервала. "
+                                            "Защитный буфер публикации — 20 минут, не гарантия максимальной "
+                                            "задержки API. Пауза сохраняет счёт и прекращает опрос."));
+        replay_controls();
+        return;
     }
     replay_status_->setText(
         QStringLiteral("ИСТОРИЯ • %1 / %2 общих свечей • %3. Будущие свечи ещё не переданы счёту. "
@@ -64,6 +89,7 @@ void PortfolioPanel::replay_stop() {
 }
 void PortfolioPanel::replay_end(bool notify) {
     replay_timer_.stop();
+    live_feed_->stop();
     const bool had_session = static_cast<bool>(replay_);
     replay_.reset();
     if (!worker_->isRunning() && !file_worker_->isRunning())
@@ -76,5 +102,34 @@ void PortfolioPanel::replay_end(bool notify) {
     } else if (!notify) {
         replay_status_->clear();
     }
+}
+void PortfolioPanel::live_frames(const std::vector<std::vector<quant::Bar>> &frames) {
+    if (!replay_ || !replay_->live || replay_->failed)
+        return;
+    if (replay_->index + frames.size() > 5000) {
+        replay_->account->request_stop("SESSION_LIMIT");
+        live_failure(QStringLiteral("Предел 5000 новых общих свечей. Сеанс остановлен; позиции не проданы. "
+                                    "Завершите его перед новым запуском."));
+        return;
+    }
+    try {
+        for (const auto &frame : frames) {
+            replay_->account->step(frame);
+            replay_->baseline->step(frame);
+            ++replay_->index;
+        }
+        replay_present();
+    } catch (const std::exception &) {
+        live_failure(QStringLiteral("Набор интервалов не принят. Счёт остановлен, позиции не проданы."));
+    }
+}
+void PortfolioPanel::live_failure(const QString &message) {
+    if (!replay_ || !replay_->live)
+        return;
+    live_feed_->stop();
+    replay_->failed = true;
+    replay_->account->request_stop("DATA_ERROR");
+    replay_present();
+    status_->setText(message);
 }
 } // namespace live

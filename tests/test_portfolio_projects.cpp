@@ -45,7 +45,9 @@ QByteArray repack(QJsonObject o, QJsonObject data) {
 TEST_CASE("Portfolio project roundtrip preserves bounded settings and data, "
           "but not source trust") {
     std::atomic<bool> cancel{false};
-    const auto p = example();
+    auto p = example();
+    p.input.moex_live = true;
+    p.input.interval = 60;
     const auto bytes = live::encode_portfolio_project(p, cancel);
     const auto q = live::decode_portfolio_project(bytes, cancel);
     CHECK(live::encode_portfolio_project(q, cancel) == bytes);
@@ -54,6 +56,8 @@ TEST_CASE("Portfolio project roundtrip preserves bounded settings and data, "
     CHECK(q.enabled == p.enabled);
     CHECK(q.modes == p.modes);
     CHECK_FALSE(q.input.metadata_known);
+    CHECK_FALSE(q.input.moex_live);
+    CHECK(q.input.interval == 0);
     CHECK(q.config.initial_cash == 120000);
     CHECK(q.input.assets[2].bars.back().end == p.input.assets[2].bars.back().end);
     const auto before = quant::portfolio_backtest(p.input.assets, p.config);

@@ -66,7 +66,7 @@ class PortfolioAccount {
     void warmup(const std::vector<Bar> &frame);
     /** Freeze targets from the final warmup close; call once before the first trading frame. */
     void arm_from_warmup();
-    void request_stop();
+    void request_stop(const std::string &reason = "MANUAL_STOP");
     bool halted() const;
     PortfolioResult result() const;
 
