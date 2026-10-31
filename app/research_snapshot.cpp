@@ -10,7 +10,7 @@
 #include <stdexcept>
 namespace live {
 namespace {
-constexpr auto engine = "qpl-single-backtest-v2";
+constexpr auto engine = "qpl-single-backtest-v3";
 void require(bool condition) {
     if (!condition)
         throw std::invalid_argument("Snapshot schema/data");
@@ -42,15 +42,19 @@ QString hash_bars(const QJsonArray &bars) {
 }
 QJsonObject group_json(const quant::RuleGroup &g) {
     QJsonArray rules;
+    QJsonArray expression;
+    for (int token : g.expression)
+        expression.append(token);
     for (const auto &r : g.rules)
         rules.append(QJsonArray{static_cast<int>(r.lhs), static_cast<int>(r.rhs), static_cast<int>(r.op),
                                 r.value, r.enabled});
-    return {{"all", g.all}, {"rules", rules}};
+    return {{"all", g.all}, {"rules", rules}, {"expression", expression}};
 }
-quant::RuleGroup group(const QJsonValue &v) {
+quant::RuleGroup group(const QJsonValue &v, bool with_expression) {
     require(v.isObject());
     const auto o = v.toObject();
-    require(o.keys() == QStringList({"all", "rules"}));
+    require(o.keys() ==
+            (with_expression ? QStringList({"all", "expression", "rules"}) : QStringList({"all", "rules"})));
     quant::RuleGroup g;
     g.all = boolean(o.value("all"));
     require(o.value("rules").isArray());
@@ -66,6 +70,15 @@ quant::RuleGroup group(const QJsonValue &v) {
         g.rules.push_back({static_cast<quant::Feature>(lhs), static_cast<quant::Feature>(rhs),
                            static_cast<quant::Compare>(op), number(a[3]), boolean(a[4])});
     }
+    if (with_expression) {
+        require(o["expression"].isArray() && o["expression"].toArray().size() <= 7);
+        for (const auto &token : o["expression"].toArray()) {
+            const auto value = integer(token);
+            require(value >= -2 && value <= 3);
+            g.expression.push_back(static_cast<int>(value));
+        }
+    }
+    require(quant::valid_rule_expression(g));
     return g;
 }
 QJsonObject config_json(const quant::SimConfig &c) {
@@ -99,7 +112,8 @@ QJsonObject config_json(const quant::SimConfig &c) {
             {"pessimistic", c.pessimistic},
             {"liquidate", c.liquidate_end}};
 }
-quant::SimConfig config(const QJsonValue &v, bool legacy) {
+quant::SimConfig config(const QJsonValue &v, int schema) {
+    const bool legacy = schema == 1;
     require(v.isObject());
     const auto o = v.toObject();
     quant::SimConfig c;
@@ -114,8 +128,8 @@ quant::SimConfig config(const QJsonValue &v, bool legacy) {
     c.strategy.indicator_window = integer(o["window"]);
     require(c.strategy.fast >= 2 && c.strategy.fast < c.strategy.slow && c.strategy.slow <= 500 &&
             c.strategy.indicator_window >= 2 && c.strategy.indicator_window <= 500);
-    c.strategy.entry = group(o["entry"]);
-    c.strategy.exit = group(o["exit"]);
+    c.strategy.entry = group(o["entry"], schema >= 3);
+    c.strategy.exit = group(o["exit"], schema >= 3);
     require(!legacy || (c.strategy.entry.rules.size() <= 2 && c.strategy.exit.rules.size() <= 2));
     c.strategy.buy_hold = boolean(o["buy_hold"]);
     c.initial_cash = number(o["cash"]);
@@ -239,7 +253,7 @@ QByteArray encode_snapshot(const ReplaySnapshot &s, const QString &source, const
     quant::validate_bars(s.bars);
     const auto bars = bars_json(s.bars);
     const auto bytes = QJsonDocument(QJsonObject{{"format", "QuantPriceLiveSnapshot"},
-                                                 {"schema", 2},
+                                                 {"schema", 3},
                                                  {"engine", engine},
                                                  {"source", source},
                                                  {"name", name},
@@ -261,8 +275,9 @@ QString verify_snapshot(const QByteArray &bytes, const std::atomic<bool> &cancel
     require(error.error == QJsonParseError::NoError && doc.isObject());
     const auto root = doc.object();
     const bool legacy = root["schema"] == 1 && root["engine"] == "qpl-single-backtest-v1";
+    const bool legacy_two = root["schema"] == 2 && root["engine"] == "qpl-single-backtest-v2";
     require(root.size() == 10 && root["format"] == "QuantPriceLiveSnapshot" &&
-            (legacy || (root["schema"] == 2 && root["engine"] == engine)));
+            (legacy || legacy_two || (root["schema"] == 3 && root["engine"] == engine)));
     for (const auto &key : {"name", "hypothesis", "source"})
         require(root[key].isString());
     require(!root["name"].toString().isEmpty() && root["name"].toString().size() <= 120 &&
@@ -292,7 +307,7 @@ QString verify_snapshot(const QByteArray &bytes, const std::atomic<bool> &cancel
     }
     quant::validate_bars(bars);
     require(root["sha256"].isString() && root["sha256"].toString() == hash_bars(bars_json(bars)));
-    const auto c = config(root["config"], legacy);
+    const auto c = config(root["config"], root["schema"].toInt());
     if (cancelled.load())
         return QStringLiteral("Проверка отменена.");
     require(root["reference"].isObject());

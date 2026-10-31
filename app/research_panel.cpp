@@ -722,15 +722,41 @@ QWidget *ResearchPanel::analytics_page() {
     connect(distribution_mode_, &QComboBox::currentIndexChanged, this, [this] { show_distribution(); });
     return page;
 }
+quant::RuleGroup ResearchPanel::ui_rules(const std::vector<RuleUi> &controls, bool all, bool custom) const {
+    quant::RuleGroup group;
+    group.all = all;
+    std::array<int, 3> joins{};
+    std::array<int, 4> opens{}, closes{};
+    for (std::size_t i = 0; i < controls.size(); ++i) {
+        const auto &r = controls[i];
+        group.rules.push_back({static_cast<quant::Feature>(r.lhs->currentIndex()),
+                               static_cast<quant::Feature>(r.rhs->currentIndex()),
+                               static_cast<quant::Compare>(r.op->currentIndex()), r.value->value(),
+                               r.enabled->isChecked()});
+        if (i)
+            joins[i - 1] = r.join->currentIndex();
+        opens[i] = r.open->currentIndex();
+        closes[i] = r.close->currentIndex();
+    }
+    if (custom)
+        group.expression = quant::compile_rule_expression(joins, opens, closes);
+    return group;
+}
 QWidget *ResearchPanel::rules_box(const QString &title, std::vector<RuleUi> &controls, QCheckBox *&all,
-                                  bool entry) {
+                                  QComboBox *&expression_mode, bool entry) {
     auto *page = new QWidget;
     auto *layout = new QVBoxLayout(page);
     layout->addWidget(text(title));
+    expression_mode = new QComboBox;
+    expression_mode->addItems(
+        {QStringLiteral("Простой режим: все / любое"), QStringLiteral("Формула: И, ИЛИ и скобки")});
+    expression_mode->setAccessibleName(title + QStringLiteral(" • способ объединения"));
+    layout->addWidget(expression_mode);
     all = new QCheckBox(
         QStringLiteral("Должны выполняться ВСЕ отмеченные условия (снимите флажок для «хотя бы одного»)"));
     all->setChecked(true);
     layout->addWidget(all);
+    QList<QWidget *> syntax_rows;
     for (int i = 0; i < 4; ++i) {
         RuleUi r;
         r.enabled = new QCheckBox(QString::number(i + 1));
@@ -768,8 +794,63 @@ QWidget *ResearchPanel::rules_box(const QString &title, std::vector<RuleUi> &con
         row->addWidget(r.rhs);
         row->addWidget(r.value);
         layout->addLayout(row);
+        auto *syntax = new QWidget;
+        auto *syntax_layout = new QHBoxLayout(syntax);
+        syntax_layout->setContentsMargins(0, 0, 0, 0);
+        r.join = new QComboBox;
+        r.join->addItems({QStringLiteral("И"), QStringLiteral("ИЛИ")});
+        r.join->setEnabled(i > 0);
+        r.open = new QComboBox;
+        r.open->addItems({QStringLiteral("Без открывающей"), "(", "((", "((("});
+        r.close = new QComboBox;
+        r.close->addItems({QStringLiteral("Без закрывающей"), ")", "))", ")))"});
+        r.join->setAccessibleName(title + QStringLiteral(" • связь перед строкой %1").arg(i + 1));
+        r.open->setAccessibleName(title + QStringLiteral(" • открыть скобки строки %1").arg(i + 1));
+        r.close->setAccessibleName(title + QStringLiteral(" • закрыть скобки строки %1").arg(i + 1));
+        syntax_layout->addWidget(text(QStringLiteral("Строка %1:").arg(i + 1)));
+        syntax_layout->addWidget(r.join);
+        syntax_layout->addWidget(r.open);
+        syntax_layout->addWidget(r.close);
+        syntax_layout->addStretch();
+        layout->addWidget(syntax);
+        syntax_rows.push_back(syntax);
         controls.push_back(r);
     }
+    auto *preview = text(QString());
+    preview->setObjectName(entry ? "entryFormulaPreview" : "exitFormulaPreview");
+    layout->insertWidget(2, preview);
+    auto *syntax_help = text(
+        QStringLiteral("В формуле И выполняется раньше ИЛИ. Скобки меняют порядок; до 3 уровней. Выключенные "
+                       "строки и пустые подгруппы исключаются; если выключено всё, сигнала нет. Пример 1 И "
+                       "(2 ИЛИ 3): перед 2 выберите И и (, перед 3 — ИЛИ и ), строку 4 выключите."));
+    layout->addWidget(syntax_help);
+    auto *fields = &controls;
+    const auto refresh = [this, fields, all, expression_mode, preview, syntax_rows, syntax_help] {
+        const bool custom = expression_mode->currentIndex() == 1;
+        all->setVisible(!custom);
+        syntax_help->setVisible(custom);
+        for (auto *row : syntax_rows)
+            row->setVisible(custom);
+        try {
+            const auto group = ui_rules(*fields, all->isChecked(), custom);
+            auto formula = QString::fromStdString(quant::rule_expression_text(group));
+            formula.replace("AND", QStringLiteral("И")).replace("OR", QStringLiteral("ИЛИ"));
+            if (formula == "EMPTY")
+                formula = QStringLiteral("Нет включённых условий — сигнала нет");
+            preview->setText(QStringLiteral("Итоговая формула: %1").arg(formula));
+        } catch (const std::exception &) {
+            preview->setText(
+                QStringLiteral("Ошибка скобок: проверьте баланс и глубину до 3. Расчёт не будет запущен."));
+        }
+    };
+    connect(expression_mode, &QComboBox::currentIndexChanged, this, [refresh] { refresh(); });
+    connect(all, &QCheckBox::toggled, this, [refresh] { refresh(); });
+    for (const auto &r : controls) {
+        connect(r.enabled, &QCheckBox::toggled, this, [refresh] { refresh(); });
+        for (auto *field : {r.join, r.open, r.close})
+            connect(field, &QComboBox::currentIndexChanged, this, [refresh] { refresh(); });
+    }
+    refresh();
     return page;
 }
 QWidget *ResearchPanel::strategy_page() {
@@ -809,6 +890,8 @@ QWidget *ResearchPanel::strategy_page() {
             }
             entry_all_->setChecked(true);
             exit_all_->setChecked(true);
+            entry_expression_->setCurrentIndex(0);
+            exit_expression_->setCurrentIndex(0);
         });
     }
     layout->addLayout(presets);
@@ -818,8 +901,10 @@ QWidget *ResearchPanel::strategy_page() {
     periods->addRow(QStringLiteral("Быстрая средняя, свечей"), fast_);
     periods->addRow(QStringLiteral("Медленная средняя, свечей"), slow_);
     layout->addLayout(periods);
-    layout->addWidget(rules_box(QStringLiteral("Когда покупать"), entry_rules_, entry_all_, true));
-    layout->addWidget(rules_box(QStringLiteral("Когда продавать"), exit_rules_, exit_all_, false));
+    layout->addWidget(
+        rules_box(QStringLiteral("Когда покупать"), entry_rules_, entry_all_, entry_expression_, true));
+    layout->addWidget(
+        rules_box(QStringLiteral("Когда продавать"), exit_rules_, exit_all_, exit_expression_, false));
     entry_confirmation_ = integer(1, 1, 50);
     exit_confirmation_ = integer(1, 1, 50);
     cooldown_bars_ = integer(0, 0, 500);
@@ -1025,18 +1110,9 @@ quant::SimConfig ResearchPanel::settings() const {
     c.strategy.slow = slow_->value();
     if (c.strategy.fast >= c.strategy.slow)
         throw std::invalid_argument("SMA fast must be smaller than slow");
-    auto rules = [](const std::vector<RuleUi> &fields, QCheckBox *all) {
-        quant::RuleGroup group;
-        group.all = all->isChecked();
-        for (const auto &r : fields)
-            group.rules.push_back({static_cast<quant::Feature>(r.lhs->currentIndex()),
-                                   static_cast<quant::Feature>(r.rhs->currentIndex()),
-                                   static_cast<quant::Compare>(r.op->currentIndex()), r.value->value(),
-                                   r.enabled->isChecked()});
-        return group;
-    };
-    c.strategy.entry = rules(entry_rules_, entry_all_);
-    c.strategy.exit = rules(exit_rules_, exit_all_);
+    c.strategy.entry =
+        ui_rules(entry_rules_, entry_all_->isChecked(), entry_expression_->currentIndex() == 1);
+    c.strategy.exit = ui_rules(exit_rules_, exit_all_->isChecked(), exit_expression_->currentIndex() == 1);
     c.initial_cash = cash_->value();
     c.lot = lot_->value();
     c.tick_size = tick_ ? tick_->value() : 0;
@@ -1090,7 +1166,9 @@ void ResearchPanel::calculate() {
     try {
         config = settings();
     } catch (const std::exception &) {
-        status_->setText(QStringLiteral("Проверьте параметры: SMA fast должна быть меньше slow."));
+        evaluate_holdout_ = false;
+        status_->setText(QStringLiteral("Расчёт не запущен. Проверьте SMA (быстрая меньше медленной), баланс "
+                                        "скобок и глубину формул до 3."));
         return;
     }
     if (!synthetic_ && !manual_metadata_->isChecked()) {
@@ -1212,10 +1290,16 @@ void ResearchPanel::explain_bar(int index) {
     const auto names = feature_names();
     const auto describe = [&](const quant::RuleGroup &group, const QString &title) {
         lines << QStringLiteral("\n%1 • %2 • сигнал: %3")
-                     .arg(title, group.all ? QStringLiteral("И") : QStringLiteral("ИЛИ"),
+                     .arg(title,
+                          QString::fromStdString(quant::rule_expression_text(group))
+                              .replace("AND", QStringLiteral("И"))
+                              .replace("OR", QStringLiteral("ИЛИ"))
+                              .replace("EMPTY", QStringLiteral("нет включённых условий")),
                           quant::evaluate(group, previous, current) ? QStringLiteral("да")
                                                                     : QStringLiteral("нет"));
+        int rule_number = 0;
         for (const auto &rule : group.rules) {
+            lines << QStringLiteral("Условие %1:").arg(++rule_number);
             if (!rule.enabled) {
                 lines << QStringLiteral("Условие выключено");
                 continue;
@@ -1625,12 +1709,40 @@ bool ResearchPanel::privacy_test() {
 }
 bool ResearchPanel::self_test() {
     cancel_work();
+    expert_->setChecked(false);
     if (!journey_test())
         return false;
     demo();
     const auto bars = selected_bars();
     if (bars.size() != 360)
         return false;
+    entry_expression_->setCurrentIndex(1);
+    entry_rules_[0].enabled->setChecked(true);
+    entry_rules_[1].enabled->setChecked(true);
+    entry_rules_[2].enabled->setChecked(true);
+    entry_rules_[3].enabled->setChecked(false);
+    entry_rules_[1].open->setCurrentIndex(1);
+    entry_rules_[2].close->setCurrentIndex(1);
+    entry_rules_[2].join->setCurrentIndex(1);
+    auto *preview = findChild<QLabel *>("entryFormulaPreview");
+    if (!preview || !preview->text().contains(QStringLiteral("1 И (2 ИЛИ 3)")))
+        return false;
+    const auto nested = configuration();
+    if (settings().strategy.entry.expression != configuration_settings(nested).strategy.entry.expression)
+        return false;
+    auto bad = nested;
+    auto values = bad["values"].toObject();
+    values[entry_rules_[2].close->objectName()] = 0;
+    bad["values"] = values;
+    if (apply_configuration(bad) || configuration() != nested)
+        return false;
+    entry_rules_[2].close->setCurrentIndex(0);
+    const int attempts_before_error = attempts_;
+    calculate();
+    if (worker_->isRunning() || attempts_ != attempts_before_error ||
+        !preview->text().contains(QStringLiteral("Ошибка скобок")))
+        return false;
+    entry_rules_[2].close->setCurrentIndex(1);
     const auto portfolio = portfolio_input();
     const auto visible = reserve_->isChecked() ? bars.size() * 8 / 10 : bars.size();
     if (portfolio.assets.size() != 3 || !portfolio.synthetic || !portfolio.metadata_known)

@@ -104,7 +104,7 @@ bool write_report(const QString &html, const QString &path, bool pdf) {
         QPdfWriter writer(&file);
         writer.setResolution(120);
         writer.setPageSize(QPageSize(QPageSize::A4));
-        writer.setTitle("Quant Price Live 6.3.0");
+        writer.setTitle("Quant Price Live 6.4.0");
         QTextDocument doc;
         doc.setHtml(html);
         doc.print(&writer);
@@ -291,7 +291,7 @@ QWidget *ResearchPanel::workbench_page() {
     l->addWidget(release);
     release_status_ =
         note(QStringLiteral(
-                 "Quant Price Live 6.3.0 • C++17 / Qt %1 • %2 • %3\nWindows 10/11 x64; если отсутствует "
+                 "Quant Price Live 6.4.0 • C++17 / Qt %1 • %2 • %3\nWindows 10/11 x64; если отсутствует "
                  "MSVCP140.dll/VCRUNTIME140.dll — установите официальный Microsoft Visual C++ "
                  "Redistributable x64. При запуске приложение не проверяет обновления и ничего не загружает.")
                  .arg(qVersion(), QSysInfo::prettyProductName(), QSysInfo::currentCpuArchitecture()));
@@ -307,13 +307,13 @@ QWidget *ResearchPanel::workbench_page() {
                 release_reply_.clear();
                 if (!r.ok()) {
                     release_status_->setText(QStringLiteral(
-                        "Версия приложения 6.3.0. Публичного релиза нет или API недоступен. Проверенные "
+                        "Версия приложения 6.4.0. Публичного релиза нет или API недоступен. Проверенные "
                         "сборки находятся в GitHub Actions; обновление устанавливается вручную."));
                     return;
                 }
                 const auto tag = r.document.object().value("tag_name").toString().left(80);
                 release_status_->setText(
-                    QStringLiteral("Установлена 6.3.0; последний опубликованный релиз: %1. Сравните версию "
+                    QStringLiteral("Установлена 6.4.0; последний опубликованный релиз: %1. Сравните версию "
                                    "на GitHub перед ручной установкой. Автоматической замены файлов нет.")
                         .arg(tag));
             },
@@ -337,6 +337,8 @@ QWidget *ResearchPanel::workbench_page() {
 }
 void ResearchPanel::setup_workbench() {
     const QList<QPair<QString, QObject *>> parameters{{"window", window_},
+                                                      {"entry_expression", entry_expression_},
+                                                      {"exit_expression", exit_expression_},
                                                       {"entry_confirmation", entry_confirmation_},
                                                       {"exit_confirmation", exit_confirmation_},
                                                       {"cooldown_bars", cooldown_bars_},
@@ -384,6 +386,9 @@ void ResearchPanel::setup_workbench() {
             rules[i].rhs->setObjectName(prefix + "rhs");
             rules[i].op->setObjectName(prefix + "op");
             rules[i].value->setObjectName(prefix + "value");
+            rules[i].join->setObjectName(prefix + "link");
+            rules[i].open->setObjectName(prefix + "open");
+            rules[i].close->setObjectName(prefix + "close");
         }
     }
     connect(expert_, &QCheckBox::toggled, this, [this](bool on) { analytics_expert_->setVisible(on); });
@@ -518,6 +523,8 @@ quant::SimConfig ResearchPanel::configuration_settings(const QJsonObject &object
     const auto current = configuration().value("values").toObject();
     auto value = [&](const char *key) {
         const QString name = QStringLiteral("study_") + key;
+        if (!v.contains(name) && (name == "study_entry_expression" || name == "study_exit_expression"))
+            return QVariant(0);
         if (!v.contains(name)) {
             if (name == "study_entry_confirmation" || name == "study_exit_confirmation")
                 return QVariant(1);
@@ -559,9 +566,13 @@ quant::SimConfig ResearchPanel::configuration_settings(const QJsonObject &object
         auto &group = g == 0 ? c.strategy.entry : c.strategy.exit;
         group.rules.clear();
         group.all = value(g == 0 ? "entry_all" : "exit_all").toBool();
+        std::array<int, 3> joins{};
+        std::array<int, 4> opens{}, closes{};
         for (int i = 0; i < 4; ++i) {
             const QString prefix = QString("study_rule_%1_%2_").arg(g).arg(i);
             auto r = [&](const QString &key) {
+                if ((key == "link" || key == "open" || key == "close") && !v.contains(prefix + key))
+                    return QJsonValue(0);
                 if (i >= 2 && key == "enabled" && !v.contains(prefix + key))
                     return QJsonValue(false);
                 return v.contains(prefix + key) ? v.value(prefix + key) : current.value(prefix + key);
@@ -569,7 +580,16 @@ quant::SimConfig ResearchPanel::configuration_settings(const QJsonObject &object
             group.rules.push_back(
                 {static_cast<quant::Feature>(r("lhs").toInt()), static_cast<quant::Feature>(r("rhs").toInt()),
                  static_cast<quant::Compare>(r("op").toInt()), r("value").toDouble(), r("enabled").toBool()});
+            if (i)
+                joins[i - 1] = r("link").toInt();
+            opens[i] = r("open").toInt();
+            closes[i] = r("close").toInt();
         }
+        const int expression_mode = value(g == 0 ? "entry_expression" : "exit_expression").toInt();
+        if (expression_mode < 0 || expression_mode > 1)
+            throw std::invalid_argument("Unknown expression mode");
+        if (expression_mode == 1)
+            group.expression = quant::compile_rule_expression(joins, opens, closes);
     }
     return c;
 }
@@ -584,7 +604,7 @@ bool ResearchPanel::apply_configuration(const QJsonObject &object, bool validate
             till > till_->maximumDate() || from > till || from.daysTo(till) > 7305)
             return false;
         const auto values = object.value("values").toObject();
-        if (values.size() > 100)
+        if (values.size() > 128)
             return false;
         for (auto it = values.begin(); it != values.end(); ++it) {
             auto *w = findChild<QWidget *>(it.key());
@@ -613,6 +633,14 @@ bool ResearchPanel::apply_configuration(const QJsonObject &object, bool validate
         if (validate_only)
             return true;
         // Validate everything before changing the controls. Unknown keys cannot become credentials or URLs.
+        for (auto *mode : {entry_expression_, exit_expression_})
+            if (!values.contains(mode->objectName()))
+                mode->setCurrentIndex(0);
+        for (auto *group : {&entry_rules_, &exit_rules_})
+            for (const auto &r : *group)
+                for (auto *field : {r.join, r.open, r.close})
+                    if (!values.contains(field->objectName()))
+                        field->setCurrentIndex(0);
         for (auto *group : {&entry_rules_, &exit_rules_})
             for (std::size_t i = 2; i < group->size(); ++i)
                 if (!values.contains((*group)[i].enabled->objectName()))
@@ -651,7 +679,7 @@ bool ResearchPanel::save_project(const QString &path, bool include_account) {
     parameters.insert("values", values);
     QJsonObject project{{"format", "QuantPriceLive"},
                         {"schema", 1},
-                        {"app_version", "6.3.0"},
+                        {"app_version", "6.4.0"},
                         {"parameters", parameters},
                         {"attempts", attempts_}};
     QJsonArray seen;
@@ -1201,9 +1229,21 @@ QString ResearchPanel::report_html(bool compact) const {
                        "исследование</title><style>body{font:14px sans-serif;max-width:1100px;margin:30px "
                        "auto;color:#172a40}table{border-collapse:collapse;width:100%}td,th{border:1px solid "
                        "#b7c5d2;padding:5px;text-align:left}pre{white-space:pre-wrap;word-break:break-all}"
-                       "img{max-width:100%}</style><h1>Quant Price Live 6.3.0 — учебное исследование</h1>");
+                       "img{max-width:100%}</style><h1>Quant Price Live 6.4.0 — учебное исследование</h1>");
     html += "<p>" + r.source.toHtmlEscaped() + " • отчёт UTC " +
             QDateTime::currentDateTimeUtc().toString(Qt::ISODate) + "</p>";
+    const auto formula_text = [](const quant::RuleGroup &group) {
+        return QString::fromStdString(quant::rule_expression_text(group))
+            .replace("AND", QStringLiteral("И"))
+            .replace("OR", QStringLiteral("ИЛИ"))
+            .replace("EMPTY", QStringLiteral("нет включённых условий"))
+            .toHtmlEscaped();
+    };
+    html +=
+        QStringLiteral("<h2>Формулы исходной стратегии</h2><p>Вход: %1<br>Выход: %2</p><p>Номера относятся к "
+                       "четырём строкам условий. Выключенные строки исключены. Формулы зафиксированы в "
+                       "момент расчёта; подробные значения условий сохранены в параметрах.</p>")
+            .arg(formula_text(r.explained_strategy.entry), formula_text(r.explained_strategy.exit));
     html += "<p>SHA-256 свечей: " + r.hash.toHtmlEscaped() +
             "</p><p>Свечей: " + QString::number(r.parameters.value("bar_count").toInt()) +
             "; UTC начало / конец (мс): " + r.parameters.value("data_begin_utc").toString() + " / " +
@@ -1395,6 +1435,12 @@ bool ResearchPanel::workbench_test() {
     const auto old = configuration();
     auto legacy = old;
     auto legacy_values = legacy["values"].toObject();
+    for (auto *mode : {entry_expression_, exit_expression_})
+        legacy_values.remove(mode->objectName());
+    for (auto *group : {&entry_rules_, &exit_rules_})
+        for (const auto &r : *group)
+            for (auto *field : {r.join, r.open, r.close})
+                legacy_values.remove(field->objectName());
     for (auto *group : {&entry_rules_, &exit_rules_})
         for (std::size_t i = 2; i < group->size(); ++i) {
             const auto &r = (*group)[i];
@@ -1411,6 +1457,9 @@ bool ResearchPanel::workbench_test() {
     if (!apply_configuration(legacy) || entry_confirmation_->value() != 1 ||
         exit_confirmation_->value() != 1 || cooldown_bars_->value() != 0 || max_holding_bars_->value() != 0 ||
         signal_delay_->value() != 0)
+        return false;
+    if (entry_expression_->currentIndex() || exit_expression_->currentIndex() ||
+        !settings().strategy.entry.expression.empty() || !settings().strategy.exit.expression.empty())
         return false;
     for (auto *group : {&entry_rules_, &exit_rules_})
         for (std::size_t i = 2; i < group->size(); ++i)

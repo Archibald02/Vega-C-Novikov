@@ -49,6 +49,8 @@ void validate_config(const SimConfig &c) {
         c.max_holding_bars > 5000)
         throw std::invalid_argument("Simulation setting out of range");
     for (const auto &group : {c.strategy.entry, c.strategy.exit}) {
+        if (!valid_rule_expression(group))
+            throw std::invalid_argument("Invalid bounded rule expression");
         if (group.rules.size() > 4)
             throw std::invalid_argument("Too many rules");
         for (const auto &r : group.rules)
@@ -389,9 +391,102 @@ std::vector<Features> candle_features(const std::vector<Bar> &bars, int fast, in
         result.push_back(f.push(b));
     return result;
 }
+bool valid_rule_expression(const RuleGroup &g) {
+    if (g.rules.size() > 4 || g.expression.size() > 7)
+        return false;
+    if (g.expression.empty())
+        return true;
+    unsigned seen = 0;
+    int depth = 0;
+    for (int token : g.expression) {
+        if (token >= 0) {
+            if (static_cast<std::size_t>(token) >= g.rules.size() || (seen & (1U << token)))
+                return false;
+            seen |= 1U << token;
+            ++depth;
+        } else {
+            if ((token != -1 && token != -2) || depth < 2)
+                return false;
+            --depth;
+        }
+    }
+    return depth == 1 && seen == ((1U << g.rules.size()) - 1);
+}
+std::vector<int> compile_rule_expression(const std::array<int, 3> &joins, const std::array<int, 4> &opens,
+                                         const std::array<int, 4> &closes) {
+    std::vector<int> output;
+    std::array<int, 16> operators{};
+    int count = 0, nesting = 0;
+    const auto emit_operator = [&] { output.push_back(operators[--count]); };
+    for (int i = 0; i < 4; ++i) {
+        if (opens[i] < 0 || opens[i] > 3 || closes[i] < 0 || closes[i] > 3)
+            throw std::invalid_argument("Bracket count out of range");
+        if (i) {
+            if (joins[i - 1] < 0 || joins[i - 1] > 1)
+                throw std::invalid_argument("Unknown logical join");
+            const int op = joins[i - 1] ? -2 : -1;
+            while (count && operators[count - 1] != 0 && (operators[count - 1] == -1 || op == -2))
+                emit_operator();
+            operators[count++] = op;
+        }
+        for (int j = 0; j < opens[i]; ++j) {
+            if (++nesting > 3)
+                throw std::invalid_argument("Rule nesting limit 3");
+            operators[count++] = 0;
+        }
+        output.push_back(i);
+        for (int j = 0; j < closes[i]; ++j) {
+            if (nesting-- <= 0)
+                throw std::invalid_argument("Unmatched closing bracket");
+            while (count && operators[count - 1] != 0)
+                emit_operator();
+            if (!count)
+                throw std::invalid_argument("Unmatched closing bracket");
+            --count;
+        }
+    }
+    if (nesting)
+        throw std::invalid_argument("Unclosed bracket");
+    while (count)
+        emit_operator();
+    return output;
+}
+std::string rule_expression_text(const RuleGroup &g) {
+    if (!valid_rule_expression(g))
+        return "INVALID";
+    if (g.expression.empty()) {
+        std::string out;
+        for (std::size_t i = 0; i < g.rules.size(); ++i)
+            if (g.rules[i].enabled) {
+                if (!out.empty())
+                    out += g.all ? " AND " : " OR ";
+                out += std::to_string(i + 1);
+            }
+        return out.empty() ? "EMPTY" : out;
+    }
+    std::array<std::string, 4> stack;
+    int count = 0;
+    for (int token : g.expression) {
+        if (token >= 0)
+            stack[count++] = g.rules[token].enabled ? std::to_string(token + 1) : "";
+        else {
+            auto right = std::move(stack[--count]);
+            auto &left = stack[count - 1];
+            if (left.empty())
+                left = std::move(right);
+            else if (!right.empty())
+                left = "(" + left + (token == -1 ? " AND " : " OR ") + right + ")";
+        }
+    }
+    return stack[0].empty() ? "EMPTY" : stack[0];
+}
 bool evaluate(const RuleGroup &g, const Features &p, const Features &c) {
+    if (!valid_rule_expression(g))
+        return false;
     bool any = false, result = g.all;
-    for (const auto &rule : g.rules) {
+    std::array<bool, 4> values{};
+    for (std::size_t index = 0; index < g.rules.size(); ++index) {
+        const auto &rule = g.rules[index];
         if (!rule.enabled)
             continue;
         any = true;
@@ -409,12 +504,32 @@ bool evaluate(const RuleGroup &g, const Features &p, const Features &c) {
             else if (std::isfinite(pa) && std::isfinite(pb))
                 match = rule.op == Compare::CrossAbove ? (a > b && pa <= pb) : (a < b && pa >= pb);
         }
+        values[index] = match;
         if (g.all)
             result &= match;
         else
             result |= match;
     }
-    return any && result;
+    if (g.expression.empty())
+        return any && result;
+    struct Value {
+        bool present = false, match = false;
+    };
+    std::array<Value, 4> stack{};
+    int count = 0;
+    for (int token : g.expression) {
+        if (token >= 0)
+            stack[count++] = {g.rules[token].enabled, values[token]};
+        else {
+            const auto right = stack[--count];
+            auto &left = stack[count - 1];
+            if (!left.present)
+                left = right;
+            else if (right.present)
+                left.match = token == -1 ? left.match && right.match : left.match || right.match;
+        }
+    }
+    return stack[0].present && stack[0].match;
 }
 PaperEngine::PaperEngine(const SimConfig &c, bool capture_trace)
     : config_(c), features_(c.strategy.fast, c.strategy.slow, c.strategy.indicator_window),

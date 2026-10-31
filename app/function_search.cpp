@@ -35,7 +35,7 @@ const QVector<FunctionDestination> &function_destinations() {
          "stationarity стационарность", 7, 0, true},
         {QStringLiteral("Конструктор стратегии"),
          QStringLiteral("Правила входа/выхода, комиссии, спред и исполнение"),
-         "алгоритм backtest бэктест проскальзывание подтверждение пауза удержание задержка", 7, 1},
+         "алгоритм backtest бэктест проскальзывание подтверждение пауза удержание задержка формула скобки вложенные", 7, 1},
         {QStringLiteral("Результат бэктеста"),
          QStringLiteral("Капитал, просадка, сделки, Sharpe/Sortino/Calmar и базы"),
          "отчет отчёт метрики benchmark", 7, 2},

@@ -148,12 +148,15 @@ class ResearchPanel : public QWidget {
         QCheckBox *enabled;
         QComboBox *lhs, *op, *rhs;
         QDoubleSpinBox *value;
+        QComboBox *join = nullptr, *open = nullptr, *close = nullptr;
     };
     QWidget *analytics_page();
     QWidget *strategy_page();
     QWidget *report_page();
     QWidget *paper_page();
-    QWidget *rules_box(const QString &title, std::vector<RuleUi> &controls, QCheckBox *&all, bool entry);
+    QWidget *rules_box(const QString &title, std::vector<RuleUi> &controls, QCheckBox *&all,
+                       QComboBox *&expression_mode, bool entry);
+    quant::RuleGroup ui_rules(const std::vector<RuleUi> &controls, bool all, bool custom) const;
     quant::SimConfig settings() const;
     void load_next();
     void calculate();
@@ -173,6 +176,7 @@ class ResearchPanel : public QWidget {
     QDoubleSpinBox *cash_, *commission_, *fixed_, *spread_, *slippage_, *allocation_, *stop_, *target_,
         *risk_, *max_dd_, *daily_, *participation_;
     QCheckBox *entry_all_, *exit_all_;
+    QComboBox *entry_expression_, *exit_expression_;
     std::vector<RuleUi> entry_rules_, exit_rules_;
     QPushButton *calculate_, *load_;
     QPushButton *paper_play_ = nullptr, *paper_step_ = nullptr;

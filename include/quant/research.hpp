@@ -76,7 +76,17 @@ struct Rule {
 struct RuleGroup {
     std::vector<Rule> rules;
     bool all = true;
+    // Empty preserves legacy flat logic. Otherwise postfix: leaf 0..3, AND=-1, OR=-2.
+    // Exactly one reference per rule, <=7 tokens; no recursion, text evaluation or executable code.
+    std::vector<int> expression{};
 };
+/** Compile four visual rows. Joins: 0=AND, 1=OR; bracket counts 0..3, depth <=3. */
+std::vector<int> compile_rule_expression(const std::array<int, 3> &joins, const std::array<int, 4> &opens,
+                                         const std::array<int, 4> &closes);
+/** Validate expression shape independently of indicator availability. */
+bool valid_rule_expression(const RuleGroup &group);
+/** Effective numbered expression; disabled leaves/empty subgroups are omitted. */
+std::string rule_expression_text(const RuleGroup &group);
 struct Strategy {
     int fast = 10, slow = 30, indicator_window = 20;
     RuleGroup entry{{Rule{}}, true};

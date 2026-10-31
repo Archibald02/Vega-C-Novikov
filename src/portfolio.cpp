@@ -65,6 +65,8 @@ void validate_inputs(std::vector<PortfolioAsset> &assets, const PortfolioConfig 
 
         require(a.strategy.fast >= 2 && a.strategy.fast < a.strategy.slow && a.strategy.slow <= 500 &&
                 a.strategy.indicator_window >= 2 && a.strategy.indicator_window <= 500);
+        // Portfolio templates currently have flat rules; never silently flatten imported custom logic.
+        require(a.strategy.entry.expression.empty() && a.strategy.exit.expression.empty());
         SimConfig validate;
         validate.strategy = a.strategy;
         PaperEngine checked(validate);

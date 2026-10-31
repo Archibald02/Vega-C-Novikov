@@ -119,6 +119,11 @@ TEST_CASE("Version one default snapshots replay with explicit legacy timing defa
     root["schema"] = 1;
     root["engine"] = "qpl-single-backtest-v1";
     auto config = root["config"].toObject();
+    for (const auto *key : {"entry", "exit"}) {
+        auto group = config[key].toObject();
+        group.remove("expression");
+        config[key] = group;
+    }
     for (const auto *key : {"entry_confirmation", "exit_confirmation", "cooldown_bars", "max_holding_bars"})
         config.remove(key);
     root["config"] = config;
@@ -133,4 +138,54 @@ TEST_CASE("Maximum-length traced snapshot stays within its byte budget") {
     CHECK(bytes.size() < live::snapshot_byte_limit);
     std::atomic<bool> cancelled{false};
     CHECK(live::verify_snapshot(bytes, cancelled).startsWith(QStringLiteral("СОВПАЛО:")));
+}
+TEST_CASE("Nested snapshot reproduces expression and rejects unknown tokens or references") {
+    auto s = example();
+    s.config.strategy.entry.rules.resize(4);
+    for (auto &r : s.config.strategy.entry.rules)
+        r = {quant::Feature::Close, quant::Feature::Constant, quant::Compare::Above, 100, true};
+    s.config.strategy.entry.expression = {0, 1, 2, -2, -1, 3, -1};
+    s.reference = quant::backtest(s.bars, s.config, 0, true);
+    auto root = QJsonDocument::fromJson(live::encode_snapshot(s, "DEMO", "Nested", {})).object();
+    std::atomic<bool> cancelled{false};
+    CHECK(live::verify_snapshot(encode(root), cancelled).startsWith(QStringLiteral("СОВПАЛО:")));
+    {
+        auto bad = root;
+        auto c = bad["config"].toObject();
+        auto g = c["entry"].toObject();
+        g.remove("expression");
+        c["entry"] = g;
+        bad["config"] = c;
+        CHECK_THROWS(live::verify_snapshot(encode(bad), cancelled));
+    }
+    for (const auto &tokens : std::vector<QJsonArray>{{0, 1, 2, -2, -1, 999, -1},
+                                                      {0, 1, 2, -3, -1, 3, -1},
+                                                      {0, 0, -1},
+                                                      {4294967296.0, 1, 2, -2, -1, 3, -1}}) {
+        auto bad = root;
+        auto c = bad["config"].toObject();
+        auto g = c["entry"].toObject();
+        g["expression"] = tokens;
+        c["entry"] = g;
+        bad["config"] = c;
+        CHECK_THROWS(live::verify_snapshot(encode(bad), cancelled));
+    }
+}
+TEST_CASE("Version two flat snapshots retain timing and traces without inventing a formula") {
+    auto s = example();
+    s.config.cooldown_bars = 2;
+    s.config.max_holding_bars = 3;
+    s.reference = quant::backtest(s.bars, s.config, 0, true);
+    auto root = QJsonDocument::fromJson(live::encode_snapshot(s, "DEMO", "V2", {})).object();
+    root["schema"] = 2;
+    root["engine"] = "qpl-single-backtest-v2";
+    auto c = root["config"].toObject();
+    for (const auto *key : {"entry", "exit"}) {
+        auto g = c[key].toObject();
+        g.remove("expression");
+        c[key] = g;
+    }
+    root["config"] = c;
+    std::atomic<bool> cancelled{false};
+    CHECK(live::verify_snapshot(encode(root), cancelled).startsWith(QStringLiteral("СОВПАЛО:")));
 }

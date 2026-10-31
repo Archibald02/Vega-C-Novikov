@@ -29,7 +29,7 @@ int main(int argc, char **argv) {
 #endif
     QCoreApplication::setOrganizationName("QuantPriceLab");
     QCoreApplication::setApplicationName("QuantPriceLive");
-    QCoreApplication::setApplicationVersion("6.3.0");
+    QCoreApplication::setApplicationVersion("6.4.0");
     const auto args = app.arguments();
     const bool online_lab = args.contains("--check-lab");
     const bool lab = args.contains("--lab-test");
