@@ -326,3 +326,8 @@ GitHub Pages публикует документацию, а не само Windo
 - MOEX ISS: https://www.moex.com/a8531
 - Qt deployment: https://doc.qt.io/qt-6/windows-deployment.html
 - GitHub Pages workflow: https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages
+
+
+## Обновление готовой программы
+
+Текущую собранную программу скачивайте из [GitHub Releases](https://github.com/Archibald02/Vega-C-Novikov/releases/latest), файл `QuantPriceLive-6.1.0-Windows-x64.zip`. Распакуйте весь архив в новую папку и запустите `START_QUANT_PRICE_LIVE.cmd`. Исходники из кнопки Code → Download ZIP не являются Windows-программой. Старый EXE не подгружает изменения GitHub автоматически. Сохранённые проекты/счета держите отдельно; перед закрытием используйте явное сохранение поддерживаемого формата.

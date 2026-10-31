@@ -19,6 +19,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
+      - name: Verify release packaging rules
+        run: python -m unittest discover -s tests -p test_release_package.py -v
       - name: Install Qt 6.8.3
         uses: jurplel/install-qt-action@v4
         with:
@@ -72,7 +74,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           # windeployqt includes qwindows, but the headless package test also needs offscreen.
           Copy-Item (Join-Path $env:QT_ROOT_DIR 'plugins/platforms/qoffscreen.dll') dist/platforms/
-          Copy-Item README.md,GUIDE_WINDOWS_RU.md,START_HERE.html,THIRD_PARTY.md,PRIVACY.md,VERIFICATION.md,LAB_GUIDE_RU.md,LAB_GUIDE.html,WORKBENCH_GUIDE_RU.md,WORKBENCH_GUIDE.html,START_QUANT_PRICE_LIVE.cmd,LICENSE dist/
+          Copy-Item README.md,RELEASE_NOTES_RU.md,GUIDE_WINDOWS_RU.md,START_HERE.html,THIRD_PARTY.md,PRIVACY.md,VERIFICATION.md,LAB_GUIDE_RU.md,LAB_GUIDE.html,WORKBENCH_GUIDE_RU.md,WORKBENCH_GUIDE.html,START_QUANT_PRICE_LIVE.cmd,LICENSE dist/
           Copy-Item licenses dist/licenses -Recurse
           Copy-Item docs dist/docs -Recurse
           $manifest = @{ version = '6.1.0'; commit = $env:GITHUB_SHA; platform = 'Windows x64'; qt = '6.8.3'; source = 'https://github.com/Archibald02/Vega-C-Novikov'; runtime = 'Microsoft Visual C++ Redistributable x64'; }
@@ -156,3 +158,26 @@ jobs:
       - name: Deploy documentation
         id: deployment
         uses: actions/deploy-pages@v4
+
+  release:
+    name: Publish verified Windows release
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: [build, documentation, deploy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: release-main
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Package, verify and publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash .github/scripts/publish_release.sh

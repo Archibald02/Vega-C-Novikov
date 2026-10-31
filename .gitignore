@@ -7,6 +7,8 @@ dist/
 .env
 .env.*
 *.token
+__pycache__/
+*.pyc
 
 # Explicit private virtual-account exports and atomic-write/backup sidecars
 *.qpa.json
