@@ -7,3 +7,7 @@ dist/
 .env
 .env.*
 *.token
+
+# Explicit private virtual-account exports and atomic-write/backup sidecars
+*.qpa.json
+*.qpa.json.*

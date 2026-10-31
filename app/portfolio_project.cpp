@@ -8,6 +8,7 @@
 #include <QJsonObject>
 #include <QSaveFile>
 #include <QTimeZone>
+#include <algorithm>
 #include <cmath>
 #include <set>
 #include <stdexcept>
@@ -215,5 +216,41 @@ void write_portfolio_project(const QString &path, const PortfolioProject &p,
     require(file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size());
     checkpoint(cancel);
     require(file.commit());
+}
+void portfolio_template(quant::PortfolioAsset &a, int mode, int fast, int slow) {
+    require(mode >= 0 && mode <= 4);
+    a.strategy = quant::Strategy{};
+    a.use_rules = mode != 0;
+    if (mode == 1) {
+        a.strategy.fast = fast;
+        a.strategy.slow = slow;
+    }
+    if (mode == 2) {
+        a.strategy.fast = 5;
+        a.strategy.slow = 20;
+    }
+    if (mode == 3) {
+        a.strategy.fast = 20;
+        a.strategy.slow = 60;
+    }
+    if (mode == 4) {
+        a.strategy.entry = {
+            {{quant::Feature::Rsi, quant::Feature::Constant, quant::Compare::Below, 30, true}}, true};
+        a.strategy.exit = {{{quant::Feature::Rsi, quant::Feature::Constant, quant::Compare::Above, 70, true}},
+                           true};
+    }
+}
+std::vector<quant::PortfolioAsset> portfolio_project_assets(const PortfolioProject &p) {
+    require(p.enabled.size() == p.input.assets.size() && p.modes.size() == p.input.assets.size());
+    std::vector<quant::PortfolioAsset> assets;
+    for (std::size_t i = 0; i < p.enabled.size(); ++i)
+        if (p.enabled[i]) {
+            auto a = p.input.assets[i];
+            a.group = QString::fromStdString(a.group).trimmed().toCaseFolded().toStdString();
+            portfolio_template(a, p.modes[i], p.fast, p.slow);
+            assets.push_back(std::move(a));
+        }
+    std::sort(assets.begin(), assets.end(), [](const auto &a, const auto &b) { return a.symbol < b.symbol; });
+    return assets;
 }
 } // namespace live

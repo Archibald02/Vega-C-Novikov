@@ -22,6 +22,7 @@ class PortfolioLiveFeed : public QObject {
     bool active() const { return active_; }
     std::function<void(const std::vector<std::vector<quant::Bar>> &)> on_frames;
     std::function<void(const QString &)> on_status, on_fatal;
+    std::function<void(const quant::PortfolioStreamState &)> on_snapshot;
 
   private:
     void next();

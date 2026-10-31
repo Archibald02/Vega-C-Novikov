@@ -95,4 +95,46 @@ std::size_t PortfolioStreamBuffer::retained_bars() const {
         n += bars.size();
     return n;
 }
+PortfolioStreamState PortfolioStreamBuffer::snapshot() const {
+    PortfolioStreamState s;
+    s.symbols = symbols_;
+    s.watermark = last_time_;
+    s.end = last_end_;
+    s.coverage = coverage_;
+    s.interval = interval_;
+    for (const auto &map : known_) {
+        std::vector<Bar> bars;
+        for (const auto &item : map)
+            bars.push_back(item.second);
+        s.series.push_back(std::move(bars));
+    }
+    return s;
+}
+PortfolioStreamBuffer PortfolioStreamBuffer::restore(const PortfolioStreamState &s) {
+    require(!s.symbols.empty() && s.symbols.size() <= 6 && s.series.size() == s.symbols.size() &&
+            (s.interval == 60 || s.interval == 24) && s.coverage > 0 && s.coverage <= s.watermark &&
+            s.end > s.watermark);
+    std::vector<PortfolioAsset> seed;
+    for (std::size_t j = 0; j < s.symbols.size(); ++j) {
+        require(!s.symbols[j].empty() && s.symbols[j].size() <= 32 &&
+                (!j || s.symbols[j - 1] < s.symbols[j]) && !s.series[j].empty() && s.series[j].size() <= 512);
+        validate_bars(s.series[j]);
+        for (const auto &b : s.series[j])
+            require(b.time >= s.coverage);
+        PortfolioAsset a;
+        a.symbol = s.symbols[j];
+        a.bars = s.series[j];
+        seed.push_back(std::move(a));
+    }
+    PortfolioStreamBuffer result(seed, s.watermark, s.end, s.coverage, s.interval);
+    result.coverage_ = s.coverage; // retain asymmetric coverage; do not advance it to the latest first bar
+    result.known_.clear();
+    for (const auto &bars : s.series) {
+        std::map<std::int64_t, Bar> map;
+        for (const auto &b : bars)
+            map.emplace(b.time, b);
+        result.known_.push_back(std::move(map));
+    }
+    return result;
+}
 } // namespace quant

@@ -1,4 +1,5 @@
 #pragma once
+#include "portfolio_account_file.hpp"
 #include "portfolio_input.hpp"
 #include "portfolio_live_feed.hpp"
 #include "portfolio_project.hpp"
@@ -25,6 +26,8 @@ struct PortfolioReplay {
     bool live = false;
     int interval = 0;
     std::unique_ptr<quant::PortfolioStreamBuffer> buffer;
+    PortfolioAccountSnapshot checkpoint;
+    bool restored = false;
 };
 struct PortfolioOutcome {
     quant::PortfolioResult result, baseline;
@@ -35,6 +38,11 @@ struct PortfolioFileOutcome {
     PortfolioProject project;
     QString error;
     bool saved = false;
+};
+struct PortfolioAccountFileOutcome {
+    QString error;
+    bool saved = false;
+    std::shared_ptr<PortfolioAccountRestore> restored;
 };
 /** Synchronous-bar, shared-cash educational portfolio research. No order API or
  * account access. */
@@ -67,6 +75,13 @@ class PortfolioPanel : public QWidget {
     void replay_present();
     void live_frames(const std::vector<std::vector<quant::Bar>> &frames);
     void live_failure(const QString &message);
+    void record_stop(const std::string &reason);
+    void account_file(bool save, QString path = {});
+    void account_resume();
+    PortfolioAccountSnapshot account_snapshot() const;
+    bool account_self_test();
+    void setup_account_files();
+    bool account_io_ = false;
     struct AssetRow {
         QCheckBox *enabled;
         QComboBox *rules;
@@ -80,6 +95,8 @@ class PortfolioPanel : public QWidget {
     QPushButton *import_, *demo_, *equal_, *run_, *cancel_, *save_, *open_;
     QPushButton *replay_start_, *replay_step_, *replay_play_, *replay_stop_, *replay_end_;
     QPushButton *live_start_;
+    QPushButton *account_save_, *account_open_, *account_resume_;
+    QCheckBox *account_confirm_;
     QLabel *replay_status_;
     QLabel *source_, *status_, *summary_;
     QDoubleSpinBox *capital_, *invested_, *weight_limit_, *group_limit_, *commission_, *fixed_, *spread_,
@@ -90,6 +107,7 @@ class PortfolioPanel : public QWidget {
     ui::WheelGuard *guard_;
     QFutureWatcher<PortfolioOutcome> *worker_;
     QFutureWatcher<PortfolioFileOutcome> *file_worker_;
+    QFutureWatcher<PortfolioAccountFileOutcome> *account_worker_ = nullptr;
     std::shared_ptr<std::atomic<bool>> cancelled_;
     std::shared_ptr<PortfolioReplay> replay_;
     QTimer replay_timer_;

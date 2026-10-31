@@ -42,6 +42,8 @@ PortfolioLiveFeed::PortfolioLiveFeed(QObject *parent, QUrl base, std::function<q
                     loading_ = false;
                     if (!frames.empty() && on_frames)
                         on_frames(frames);
+                    if (active_ && on_snapshot)
+                        on_snapshot(buffer_->snapshot());
                     if (active_ && !paused_ && on_status)
                         on_status(QStringLiteral(
                                       "MOEX • задержанные закрытые свечи. Последний общий конец UTC: %1. "

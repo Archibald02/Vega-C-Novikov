@@ -14,6 +14,9 @@ struct PortfolioProject {
     int fast = 10, slow = 30;
 };
 constexpr qint64 portfolio_project_byte_limit = 16 * 1024 * 1024;
+/** Same bounded visible templates for research, restore and causal execution. */
+void portfolio_template(quant::PortfolioAsset &asset, int mode, int fast, int slow);
+std::vector<quant::PortfolioAsset> portfolio_project_assets(const PortfolioProject &project);
 QByteArray encode_portfolio_project(const PortfolioProject &project, const std::atomic<bool> &cancel);
 PortfolioProject decode_portfolio_project(const QByteArray &bytes, const std::atomic<bool> &cancel);
 /** Regular files only, bounded read, atomic explicit write; no network or

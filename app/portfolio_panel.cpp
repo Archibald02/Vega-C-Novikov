@@ -103,6 +103,25 @@ PortfolioPanel::PortfolioPanel(QWidget *parent) : QWidget(parent) {
                                                    "настройки. Сохраняется только по вашей "
                                                    "команде, без паролей и токенов. Открывается без сети; "
                                                    "результат нужно рассчитать заново.")));
+    auto *account_options = new QWidget;
+    auto *account_layout = new QVBoxLayout(account_options);
+    auto *account_actions = new QHBoxLayout;
+    account_save_ = new QPushButton(QStringLiteral("Сохранить счёт с ценами…"));
+    account_open_ = new QPushButton(QStringLiteral("Открыть сохранённый счёт…"));
+    account_actions->addWidget(account_save_);
+    account_actions->addWidget(account_open_);
+    account_layout->addLayout(account_actions);
+    account_confirm_ = new QCheckBox(
+        QStringLiteral("Проверил неизменные лоты/шаги из файла; разрешаю публичные запросы MOEX"));
+    account_resume_ = new QPushButton(QStringLiteral("Подключить MOEX к восстановленному счёту"));
+    account_layout->addWidget(account_confirm_);
+    account_layout->addWidget(account_resume_);
+    account_layout->addWidget(
+        ui::paragraph(QStringLiteral("Файл .qpa.json содержит свечи, капитал, позиции и журнал. "
+                                     "Сохраняется только по команде; открытие проверяет расчёт без сети. "
+                                     "Сумма SHA-256 не подтверждает автора файла.")));
+    layout->addWidget(
+        ui::fold(QStringLiteral("Сохранение и восстановление виртуального счёта"), account_options));
     source_ = ui::paragraph(QStringLiteral("Начните с синтетического ДЕМО или загрузите закрытые "
                                            "свечи в «Исследование»."));
     source_->setTextFormat(Qt::PlainText);
@@ -237,6 +256,11 @@ PortfolioPanel::PortfolioPanel(QWidget *parent) : QWidget(parent) {
     live_feed_->on_frames = [this](const auto &frames) { live_frames(frames); };
     live_feed_->on_fatal = [this](const QString &s) { live_failure(s); };
     live_feed_->on_status = [this](const QString &s) { status_->setText(s); };
+    live_feed_->on_snapshot = [this](const auto &s) {
+        if (replay_ && replay_->live && !replay_->failed)
+            replay_->checkpoint.audit = s;
+    };
+    setup_account_files();
     guard_ = new ui::WheelGuard(this);
     ui::prepare_controls(this);
     connect(demo_, &QPushButton::clicked, this, [this] { demo(); });
@@ -266,6 +290,11 @@ PortfolioPanel::PortfolioPanel(QWidget *parent) : QWidget(parent) {
     connect(cancel_, &QPushButton::clicked, this, [this] {
         if (cancelled_)
             cancelled_->store(true);
+        if (account_io_) {
+            status_->setText(QStringLiteral("Операция с файлом счёта отменена. Сам сеанс не останавливается; "
+                                            "уже завершённый файл не удаляется."));
+            return;
+        }
         status_->setText(file_worker_->isRunning()
                              ? QStringLiteral("Операция с файлом отменена. Уже завершённое сохранение не "
                                               "удаляется; текущий портфель остаётся в памяти.")
@@ -328,6 +357,7 @@ PortfolioPanel::~PortfolioPanel() {
         cancelled_->store(true);
 }
 void PortfolioPanel::busy(bool on) {
+    on = on || replay_ || worker_->isRunning() || file_worker_->isRunning() || account_io_;
     assets_->setEnabled(!on);
     for (auto *w : findChildren<QAbstractSpinBox *>())
         w->setEnabled(!on);
@@ -338,10 +368,12 @@ void PortfolioPanel::busy(bool on) {
     open_->setEnabled(!on);
     save_->setEnabled(!on && !input_.assets.empty());
     equal_->setEnabled(!on && !rows_.empty());
-    cancel_->setEnabled(on && !replay_);
+    cancel_->setEnabled(on && (!replay_ || account_io_));
     replay_controls();
 }
-bool PortfolioPanel::working() const { return worker_->isRunning() || file_worker_->isRunning() || replay_; }
+bool PortfolioPanel::working() const {
+    return worker_->isRunning() || file_worker_->isRunning() || replay_ || account_io_;
+}
 void PortfolioPanel::invalidate() {
     if (working())
         return;
@@ -643,27 +675,7 @@ void PortfolioPanel::calculate(bool prepare_replay, bool prepare_live) {
         a.tick_size = r.tick->value();
         a.group = r.group->text().trimmed().toCaseFolded().toStdString();
         const int mode = r.rules->currentIndex();
-        a.use_rules = mode != 0;
-        if (mode == 1) {
-            a.strategy.fast = fast_->value();
-            a.strategy.slow = slow_->value();
-        }
-        if (mode == 2) {
-            a.strategy.fast = 5;
-            a.strategy.slow = 20;
-        }
-        if (mode == 3) {
-            a.strategy.fast = 20;
-            a.strategy.slow = 60;
-        }
-        if (mode == 4) {
-            a.strategy.entry = {
-                {quant::Rule{quant::Feature::Rsi, quant::Feature::Constant, quant::Compare::Below, 30, true}},
-                true};
-            a.strategy.exit = {
-                {quant::Rule{quant::Feature::Rsi, quant::Feature::Constant, quant::Compare::Above, 70, true}},
-                true};
-        }
+        portfolio_template(a, mode, fast_->value(), slow_->value());
         if (a.strategy.fast >= a.strategy.slow) {
             status_->setText(QStringLiteral("Быстрая SMA должна быть меньше медленной."));
             return;
@@ -702,10 +714,11 @@ void PortfolioPanel::calculate(bool prepare_replay, bool prepare_live) {
     const auto flag = cancelled_;
     const auto source = source_->text();
     const auto interval = input_.interval;
+    const auto saved_project = project();
     busy(true);
     status_->setText(QStringLiteral("Согласуем общие интервалы и считаем единый счёт в фоне…"));
     worker_->setFuture(QtConcurrent::run([selected = std::move(selected), c, flag, source, prepare_replay,
-                                          prepare_live, interval]() mutable {
+                                          prepare_live, interval, saved_project]() mutable {
         PortfolioOutcome out;
         out.source = source;
         try {
@@ -719,6 +732,8 @@ void PortfolioPanel::calculate(bool prepare_replay, bool prepare_live) {
                             a.bars.end());
                 auto replay = std::make_shared<PortfolioReplay>();
                 replay->schedule = quant::portfolio_schedule(selected);
+                replay->checkpoint.project = saved_project;
+                replay->checkpoint.excluded = replay->schedule.excluded;
                 if (flag->load())
                     return out;
                 replay->account = std::make_unique<quant::PortfolioAccount>(selected, c);
@@ -742,6 +757,11 @@ void PortfolioPanel::calculate(bool prepare_replay, bool prepare_live) {
                         replay->account->warmup(frame);
                         replay->baseline->warmup(frame);
                     }
+                    replay->checkpoint.live = true;
+                    replay->checkpoint.interval = interval;
+                    replay->checkpoint.warmup_cutoff = now - 20 * 60000;
+                    replay->checkpoint.warmup_end = last.end;
+                    replay->checkpoint.audit = replay->buffer->snapshot();
                     replay->account->arm_from_warmup();
                     replay->baseline->arm_from_warmup();
                     replay->schedule.frames.clear();
@@ -1019,6 +1039,8 @@ bool PortfolioPanel::self_test() {
         return false;
     clear_private_state();
     if (replay_ || live_feed_->active() || !input_.assets.empty() || positions_->rowCount())
+        return false;
+    if (!account_self_test())
         return false;
     demo();
     run_->click();
