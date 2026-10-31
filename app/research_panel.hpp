@@ -2,6 +2,7 @@
 #include "instrument_catalog.hpp"
 #include "market_history.hpp"
 #include "portfolio_input.hpp"
+#include "quant/attribution.hpp"
 #include "quant/bootstrap.hpp"
 #include "quant/research.hpp"
 #include "quant/robustness.hpp"
@@ -43,6 +44,7 @@ struct LabResult {
     quant::WalkForward walk;
     quant::Robustness robustness;
     quant::BootstrapResult bootstrap;
+    quant::PerformanceAttribution attribution;
     quant::HoldoutResult holdout;
     bool has_holdout = false;
     QJsonObject parameters;
@@ -118,6 +120,14 @@ class ResearchPanel : public QWidget {
     bool workbench_test();
     bool higher_test();
     bool bootstrap_test();
+    bool attribution_test();
+    QWidget *attribution_panel();
+    void clear_attribution();
+    void present_attribution(const LabResult &result);
+    QString attribution_html(bool compact) const;
+    QLabel *attribution_status_;
+    QTableWidget *attribution_months_, *attribution_sections_, *attribution_positions_;
+    VisualChart *attribution_chart_;
     QDateEdit *from_, *till_;
     QCheckBox *custom_dates_, *reserve_, *expert_, *save_account_, *save_cash_, *manual_metadata_;
     QSpinBox *gap_;

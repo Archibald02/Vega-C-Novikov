@@ -651,6 +651,7 @@ void ResearchPanel::clear_private_state() {
     paper_bars_.clear();
     selected_->clear();
     last_result_ = LabResult{};
+    clear_attribution();
     bootstrap_enabled_->setChecked(false);
     bootstrap_simulations_->setValue(400);
     bootstrap_block_->setValue(10);
@@ -1368,6 +1369,7 @@ void ResearchPanel::calculate() {
             else
                 r.correlation = quant::aligned_correlation(series);
             r.simulation = quant::backtest(bars, config, 0, true);
+            r.attribution = quant::performance_attribution(bars, r.simulation, cancelled.get());
             r.snapshot = std::make_shared<const ReplaySnapshot>(ReplaySnapshot{bars, config, r.simulation});
             r.baseline = quant::buy_hold(bars, config);
             if (cancelled->load())
@@ -1879,8 +1881,15 @@ bool ResearchPanel::privacy_test() {
     demo();
     start_paper();
     step_paper();
+    attribution_status_->setText(QStringLiteral("TEST_PRIVATE_ATTRIBUTION"));
+    attribution_months_->setRowCount(1);
+    attribution_positions_->setRowCount(1);
+    last_result_.attribution.positions.resize(1);
     clear_private_state();
-    return data_.empty() && !paper_ && cash_->value() == 100000 && journal_->rowCount() == 0;
+    return data_.empty() && !paper_ && cash_->value() == 100000 && journal_->rowCount() == 0 &&
+           attribution_months_->rowCount() == 0 && attribution_positions_->rowCount() == 0 &&
+           last_result_.attribution.positions.empty() &&
+           !attribution_status_->text().contains(QStringLiteral("TEST_PRIVATE_ATTRIBUTION"));
 }
 bool ResearchPanel::self_test() {
     cancel_work();
@@ -2014,7 +2023,8 @@ bool ResearchPanel::self_test() {
     status_->setText(
         QStringLiteral("ДЕМО лаборатории • проверки расчёта, отмены и виртуального счёта завершены"));
     return r.correlation.common_returns == 359 && r.walk.folds.size() > 0 && paper_ &&
-           paper_->result().halted && features_table_->rowCount() == 100 && higher_test() && bootstrap_test();
+           paper_->result().halted && features_table_->rowCount() == 100 && higher_test() &&
+           bootstrap_test() && attribution_test();
 }
 bool ResearchPanel::higher_test() {
     demo(true);

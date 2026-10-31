@@ -104,7 +104,7 @@ bool write_report(const QString &html, const QString &path, bool pdf) {
         QPdfWriter writer(&file);
         writer.setResolution(120);
         writer.setPageSize(QPageSize(QPageSize::A4));
-        writer.setTitle("Quant Price Live 6.7.0");
+        writer.setTitle("Quant Price Live 6.8.0");
         QTextDocument doc;
         doc.setHtml(html);
         doc.print(&writer);
@@ -207,6 +207,7 @@ QWidget *ResearchPanel::workbench_page() {
     stress_ = grid({QStringLiteral("Стресс-сценарий"), QStringLiteral("Результат, %"),
                     QStringLiteral("Просадка, %"), QStringLiteral("Оборот")});
     l->addWidget(stress_);
+    l->addWidget(ui::fold(QStringLiteral("Периоды и вклад сделок"), attribution_panel(), true));
     auto *bootstrap = new QWidget;
     auto *bl = new QVBoxLayout(bootstrap);
     bootstrap_enabled_ = new QCheckBox(QStringLiteral("Включить блочный bootstrap при следующем расчёте"));
@@ -334,7 +335,7 @@ QWidget *ResearchPanel::workbench_page() {
     auto *release = new QPushButton(QStringLiteral("Версия и проверка обновлений"));
     l->addWidget(release);
     release_status_ =
-        note(QStringLiteral("Quant Price Live 6.7.0 • C++17 / Qt %1 • %2 • "
+        note(QStringLiteral("Quant Price Live 6.8.0 • C++17 / Qt %1 • %2 • "
                             "%3\nWindows 10/11 x64; если отсутствует "
                             "MSVCP140.dll/VCRUNTIME140.dll — установите "
                             "официальный Microsoft Visual C++ "
@@ -353,14 +354,14 @@ QWidget *ResearchPanel::workbench_page() {
                 release_reply_.clear();
                 if (!r.ok()) {
                     release_status_->setText(
-                        QStringLiteral("Версия приложения 6.7.0. Публичного релиза нет или API "
+                        QStringLiteral("Версия приложения 6.8.0. Публичного релиза нет или API "
                                        "недоступен. Проверенные "
                                        "сборки находятся в GitHub Actions; обновление "
                                        "устанавливается вручную."));
                     return;
                 }
                 const auto tag = r.document.object().value("tag_name").toString().left(80);
-                release_status_->setText(QStringLiteral("Установлена 6.7.0; последний "
+                release_status_->setText(QStringLiteral("Установлена 6.8.0; последний "
                                                         "опубликованный релиз: %1. Сравните версию "
                                                         "на GitHub перед ручной установкой. "
                                                         "Автоматической замены файлов нет.")
@@ -784,7 +785,7 @@ bool ResearchPanel::save_project(const QString &path, bool include_account) {
     parameters.insert("values", values);
     QJsonObject project{{"format", "QuantPriceLive"},
                         {"schema", 1},
-                        {"app_version", "6.7.0"},
+                        {"app_version", "6.8.0"},
                         {"parameters", parameters},
                         {"attempts", attempts_}};
     QJsonArray seen;
@@ -901,6 +902,7 @@ bool ResearchPanel::open_project(const QString &path) {
         for (const auto &value : seen)
             holdout_used_[value.toString()] = true;
         last_result_ = LabResult{};
+        clear_attribution();
         bootstrap_status_->setText(QStringLiteral("Проект открыт. Для bootstrap нужен новый расчёт."));
         bootstrap_chart_->clear();
         bootstrap_histogram_->clear();
@@ -1204,6 +1206,7 @@ void ResearchPanel::preflight() {
     preflight_->setText(lines.join('\n'));
 }
 void ResearchPanel::record_run(const LabResult &r) {
+    present_attribution(r);
     const auto hash = r.hash;
     if (runs_.size() >= 10)
         runs_.erase(runs_.begin());
@@ -1379,7 +1382,7 @@ QString ResearchPanel::report_html(bool compact) const {
                                   "#b7c5d2;padding:5px;text-align:left}pre{"
                                   "white-space:pre-wrap;word-break:break-all}"
                                   "img{max-width:100%}</style><h1>Quant Price "
-                                  "Live 6.7.0 — учебное исследование</h1>");
+                                  "Live 6.8.0 — учебное исследование</h1>");
     html += "<p>" + r.source.toHtmlEscaped() + " • отчёт UTC " +
             QDateTime::currentDateTimeUtc().toString(Qt::ISODate) + "</p>";
     const auto formula_text = [](const quant::RuleGroup &group) {
@@ -1483,6 +1486,7 @@ QString ResearchPanel::report_html(bool compact) const {
             html += "<img src='data:image/png;base64," + QString::fromLatin1(bytes.toBase64()) + "'>";
         }
     }
+    html += attribution_html(compact);
     html += "<h2>Капитал, ₽</h2><img src='data:image/png;base64," +
             plot(r.simulation.equity, QColor("#16896c")) +
             "'><h2>Просадка (доля)</h2><img src='data:image/png;base64," +

@@ -44,7 +44,9 @@ const QVector<FunctionDestination> &function_destinations() {
          "отчет отчёт метрики benchmark", 7, 2},
         {QStringLiteral("Устойчивость и walk-forward"),
          QStringLiteral("Проверка параметров и отдельного периода"),
-         "переобучение robustness holdout bootstrap бутстрэп неопределённость сценарии", 7, 5},
+         "переобучение robustness holdout bootstrap бутстрэп неопределённость сценарии месяцы периоды вклад "
+         "концентрация",
+         7, 5},
         {QStringLiteral("Эксперименты и проекты"),
          QStringLiteral("Гипотезы, сравнение запусков и явный экспорт отчёта"), "сохранение qpe qps снимок",
          7, 7},
