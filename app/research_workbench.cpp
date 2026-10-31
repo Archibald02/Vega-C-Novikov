@@ -104,7 +104,7 @@ bool write_report(const QString &html, const QString &path, bool pdf) {
         QPdfWriter writer(&file);
         writer.setResolution(120);
         writer.setPageSize(QPageSize(QPageSize::A4));
-        writer.setTitle("Quant Price Live 6.6.0");
+        writer.setTitle("Quant Price Live 6.7.0");
         QTextDocument doc;
         doc.setHtml(html);
         doc.print(&writer);
@@ -207,6 +207,50 @@ QWidget *ResearchPanel::workbench_page() {
     stress_ = grid({QStringLiteral("Стресс-сценарий"), QStringLiteral("Результат, %"),
                     QStringLiteral("Просадка, %"), QStringLiteral("Оборот")});
     l->addWidget(stress_);
+    auto *bootstrap = new QWidget;
+    auto *bl = new QVBoxLayout(bootstrap);
+    bootstrap_enabled_ = new QCheckBox(QStringLiteral("Включить блочный bootstrap при следующем расчёте"));
+    bl->addWidget(bootstrap_enabled_);
+    auto *bf = new QFormLayout;
+    auto spin = [](int value, int lo, int hi) {
+        auto *w = new QSpinBox;
+        w->setRange(lo, hi);
+        w->setValue(value);
+        return w;
+    };
+    bootstrap_simulations_ = spin(400, 100, 1000);
+    bootstrap_block_ = spin(10, 1, 250);
+    bootstrap_seed_ = spin(42, 0, 1000000000);
+    bf->addRow(QStringLiteral("Сценариев (100–1000)"), bootstrap_simulations_);
+    bf->addRow(QStringLiteral("Длина блока, наблюдаемых доходностей"), bootstrap_block_);
+    bf->addRow(QStringLiteral("Seed: повторяемая последовательность"), bootstrap_seed_);
+    bl->addLayout(bf);
+    bl->addWidget(note(QStringLiteral(
+        "Последовательные блоки доходности уже рассчитанного капитала переставляются с возвращением. "
+        "Начало — первое закрытие, стартовая комиссия до него исключена. Межсессионные переходы остаются "
+        "наблюдениями: "
+        "10 наблюдений не означают 10 часов или дней. Это сценарная устойчивость на истории, не прогноз и не "
+        "доверительный интервал будущей прибыли. "
+        "Зависимости длиннее блока, смены режима и отбор стратегии не учитываются. Попробуйте несколько длин "
+        "блока; 1 даёт независимое перемешивание. "
+        "Резервные 20% исключены при обычном исследовании. Bootstrap не запускает заново правила/сделки и не "
+        "меняет их.")));
+    bootstrap_status_ = note(QStringLiteral("Bootstrap выключен."));
+    bl->addWidget(bootstrap_status_);
+    bootstrap_chart_ = new VisualChart;
+    bootstrap_chart_->setMinimumHeight(220);
+    bl->addWidget(bootstrap_chart_);
+    bootstrap_histogram_ = new VisualChart;
+    bootstrap_histogram_->setMinimumHeight(200);
+    bl->addWidget(bootstrap_histogram_);
+    const auto enable_bootstrap_controls = [this] {
+        for (auto *w : {bootstrap_simulations_, bootstrap_block_, bootstrap_seed_})
+            w->setEnabled(bootstrap_enabled_->isChecked());
+    };
+    connect(bootstrap_enabled_, &QCheckBox::toggled, this,
+            [enable_bootstrap_controls] { enable_bootstrap_controls(); });
+    enable_bootstrap_controls();
+    l->addWidget(ui::fold(QStringLiteral("Неопределённость • блочный bootstrap"), bootstrap, true));
     runs_table_ =
         grid({QStringLiteral("Запуск"), QStringLiteral("Чистый результат, %"), QStringLiteral("Просадка, %"),
               QStringLiteral("Оборот"), QStringLiteral("Издержки, ₽"), QStringLiteral("Следующие отрезки, %"),
@@ -290,7 +334,7 @@ QWidget *ResearchPanel::workbench_page() {
     auto *release = new QPushButton(QStringLiteral("Версия и проверка обновлений"));
     l->addWidget(release);
     release_status_ =
-        note(QStringLiteral("Quant Price Live 6.6.0 • C++17 / Qt %1 • %2 • "
+        note(QStringLiteral("Quant Price Live 6.7.0 • C++17 / Qt %1 • %2 • "
                             "%3\nWindows 10/11 x64; если отсутствует "
                             "MSVCP140.dll/VCRUNTIME140.dll — установите "
                             "официальный Microsoft Visual C++ "
@@ -309,14 +353,14 @@ QWidget *ResearchPanel::workbench_page() {
                 release_reply_.clear();
                 if (!r.ok()) {
                     release_status_->setText(
-                        QStringLiteral("Версия приложения 6.6.0. Публичного релиза нет или API "
+                        QStringLiteral("Версия приложения 6.7.0. Публичного релиза нет или API "
                                        "недоступен. Проверенные "
                                        "сборки находятся в GitHub Actions; обновление "
                                        "устанавливается вручную."));
                     return;
                 }
                 const auto tag = r.document.object().value("tag_name").toString().left(80);
-                release_status_->setText(QStringLiteral("Установлена 6.6.0; последний "
+                release_status_->setText(QStringLiteral("Установлена 6.7.0; последний "
                                                         "опубликованный релиз: %1. Сравните версию "
                                                         "на GitHub перед ручной установкой. "
                                                         "Автоматической замены файлов нет.")
@@ -342,6 +386,10 @@ QWidget *ResearchPanel::workbench_page() {
 }
 void ResearchPanel::setup_workbench() {
     const QList<QPair<QString, QObject *>> parameters{{"window", window_},
+                                                      {"bootstrap_enabled", bootstrap_enabled_},
+                                                      {"bootstrap_simulations", bootstrap_simulations_},
+                                                      {"bootstrap_block", bootstrap_block_},
+                                                      {"bootstrap_seed", bootstrap_seed_},
                                                       {"higher_factor", higher_factor_},
                                                       {"higher_fast", higher_fast_},
                                                       {"higher_slow", higher_slow_},
@@ -670,6 +718,14 @@ bool ResearchPanel::apply_configuration(const QJsonObject &object, bool validate
         if (validate_only)
             return true;
         // Validate everything before changing the controls. Unknown keys cannot become credentials or URLs.
+        if (!values.contains(bootstrap_enabled_->objectName()))
+            bootstrap_enabled_->setChecked(false);
+        if (!values.contains(bootstrap_simulations_->objectName()))
+            bootstrap_simulations_->setValue(400);
+        if (!values.contains(bootstrap_block_->objectName()))
+            bootstrap_block_->setValue(10);
+        if (!values.contains(bootstrap_seed_->objectName()))
+            bootstrap_seed_->setValue(42);
         if (!values.contains(higher_factor_->objectName()))
             higher_factor_->setCurrentIndex(0);
         if (!values.contains(higher_fast_->objectName()))
@@ -728,7 +784,7 @@ bool ResearchPanel::save_project(const QString &path, bool include_account) {
     parameters.insert("values", values);
     QJsonObject project{{"format", "QuantPriceLive"},
                         {"schema", 1},
-                        {"app_version", "6.6.0"},
+                        {"app_version", "6.7.0"},
                         {"parameters", parameters},
                         {"attempts", attempts_}};
     QJsonArray seen;
@@ -845,6 +901,9 @@ bool ResearchPanel::open_project(const QString &path) {
         for (const auto &value : seen)
             holdout_used_[value.toString()] = true;
         last_result_ = LabResult{};
+        bootstrap_status_->setText(QStringLiteral("Проект открыт. Для bootstrap нужен новый расчёт."));
+        bootstrap_chart_->clear();
+        bootstrap_histogram_->clear();
         report_->clear();
         statistics_->clear();
         feature_text_->clear();
@@ -1180,6 +1239,44 @@ void ResearchPanel::record_run(const LabResult &r) {
     for (const auto &t : r.robustness.stress)
         row(stress_, {QString::fromStdString(t.name), num(t.metrics.total_return * 100),
                       num(t.metrics.max_drawdown * 100), num(t.metrics.turnover)});
+    const auto &boot = r.bootstrap;
+    bootstrap_status_->setText(bootstrap_description(boot));
+    if (boot.status == quant::BootstrapStatus::Ready) {
+        QVector<QPointF> lower, median, upper, actual;
+        for (const auto &b : boot.band) {
+            lower.push_back({static_cast<double>(b.observation), b.lower});
+            median.push_back({static_cast<double>(b.observation), b.median});
+            upper.push_back({static_cast<double>(b.observation), b.upper});
+            actual.push_back({static_cast<double>(b.observation), b.actual});
+        }
+        bootstrap_chart_->set_lines(
+            {{QStringLiteral("5%"), QColor("#ef8490"), lower, true},
+             {QStringLiteral("Медиана"), QColor("#39d2b0"), median, false},
+             {QStringLiteral("95%"), QColor("#9daaff"), upper, true},
+             {QStringLiteral("Исходная история"), QColor("#ffcf70"), actual, false}},
+            QStringLiteral("Сценарный капитал • первое закрытие = 100"),
+            QStringLiteral(
+                "X — переходы между закрытиями; точечные квантили, не отдельные пути и не прогноз"));
+        const auto &v = boot.terminal_returns;
+        const double lo = v.front() * 100, hi = v.back() * 100;
+        QVector<QPointF> bins;
+        if (hi - lo < 1e-9)
+            bins.push_back({lo, static_cast<double>(v.size())});
+        else {
+            std::array<int, 20> counts{};
+            const double width = (hi - lo) / 20;
+            for (double value : v)
+                ++counts[std::clamp(static_cast<int>((value * 100 - lo) / width), 0, 19)];
+            for (int i = 0; i < 20; ++i)
+                bins.push_back({lo + (i + .5) * width, static_cast<double>(counts[i])});
+        }
+        bootstrap_histogram_->set_histogram(
+            bins, QStringLiteral("Распределение итоговой доходности, %"),
+            QStringLiteral("Y — число синтетических сценариев; все из одной исторической выборки"));
+    } else {
+        bootstrap_chart_->clear(bootstrap_description(boot));
+        bootstrap_histogram_->clear(QStringLiteral("Нет завершённых сценариев"));
+    }
     refresh_runs();
     if (r.has_holdout)
         holdout_status_->setText(
@@ -1282,7 +1379,7 @@ QString ResearchPanel::report_html(bool compact) const {
                                   "#b7c5d2;padding:5px;text-align:left}pre{"
                                   "white-space:pre-wrap;word-break:break-all}"
                                   "img{max-width:100%}</style><h1>Quant Price "
-                                  "Live 6.6.0 — учебное исследование</h1>");
+                                  "Live 6.7.0 — учебное исследование</h1>");
     html += "<p>" + r.source.toHtmlEscaped() + " • отчёт UTC " +
             QDateTime::currentDateTimeUtc().toString(Qt::ISODate) + "</p>";
     const auto formula_text = [](const quant::RuleGroup &group) {
@@ -1369,6 +1466,23 @@ QString ResearchPanel::report_html(bool compact) const {
     html += QStringLiteral("<p>Комиссии %1 ₽; модельная потеря на спреде/проскальзывании/шаге %2 ₽. Эти "
                            "суммы уже учтены в капитале, повторно не вычитаются.</p>")
                 .arg(num(m.fees), num(m.execution_cost));
+    html += "<h2>Неопределённость: блочный bootstrap</h2><p>" +
+            bootstrap_description(r.bootstrap).toHtmlEscaped().replace("\n", "<br>") + "</p>";
+    html += QStringLiteral(
+        "<p>Сценарии переставляют блоки исторической доходности капитала, а не OHLCV/сделки. "
+        "Начало — первое закрытие; стартовые издержки до него исключены. Блок измеряется наблюдениями, "
+        "включая межсессионные переходы. Квантили точечные, не совместный интервал и не прогноз. "
+        "Смена режима, длинные зависимости и отбор стратегии не учтены; годовой масштаб не применяется.</p>");
+    if (r.bootstrap.status == quant::BootstrapStatus::Ready) {
+        for (auto *chart : {bootstrap_chart_, bootstrap_histogram_}) {
+            const auto image = chart->grab().toImage();
+            QByteArray bytes;
+            QBuffer buffer(&bytes);
+            buffer.open(QIODevice::WriteOnly);
+            image.save(&buffer, "PNG");
+            html += "<img src='data:image/png;base64," + QString::fromLatin1(bytes.toBase64()) + "'>";
+        }
+    }
     html += "<h2>Капитал, ₽</h2><img src='data:image/png;base64," +
             plot(r.simulation.equity, QColor("#16896c")) +
             "'><h2>Просадка (доля)</h2><img src='data:image/png;base64," +

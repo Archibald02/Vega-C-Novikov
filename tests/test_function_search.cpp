@@ -7,7 +7,7 @@ TEST_CASE("Function search handles Russian, abbreviations and multiple words loc
          {QStringLiteral("  КоРРЕЛЯЦИИ  "), QStringLiteral("ATR"), QStringLiteral("матрица доходностей"),
           QStringLiteral("ADF KPSS"), QStringLiteral("Walk-Forward"), QStringLiteral("проекты эксперименты"),
           QStringLiteral("скобки"), QStringLiteral("вложенные"), QStringLiteral("частичный выход"),
-          QStringLiteral("старший интервал")}) {
+          QStringLiteral("старший интервал"), QStringLiteral("bootstrap")}) {
         const auto found = live::find_functions(query);
         REQUIRE(found.size() == 1);
         CHECK(entries[found.front()].workspace == 7);

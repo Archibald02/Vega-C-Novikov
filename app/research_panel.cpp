@@ -185,6 +185,41 @@ void journal_rows(QTableWidget *table, const quant::SimResult &result) {
     table->setUpdatesEnabled(true);
 }
 } // namespace
+QString bootstrap_description(const quant::BootstrapResult &b) {
+    using S = quant::BootstrapStatus;
+    const auto setup = QStringLiteral("Блок %1, сценариев %2, seed %3; наблюдений доходности %4. ")
+                           .arg(b.config.block_length)
+                           .arg(b.config.simulations)
+                           .arg(b.config.seed)
+                           .arg(b.observations);
+    switch (b.status) {
+    case S::Disabled:
+        return QStringLiteral("Bootstrap выключен. Включите его и нажмите «Рассчитать».");
+    case S::TooShort:
+        return setup + QStringLiteral("Недостаточно данных: нужно минимум 20 переходов между закрытиями и не "
+                                      "меньше длины блока.");
+    case S::NonPositiveCapital:
+        return setup + QStringLiteral("Расчёт недоступен: есть нулевой или отрицательный капитал на "
+                                      "закрытии. Такие участки не удаляются.");
+    case S::Cancelled:
+        return setup + QStringLiteral("Отменено. Частичные оценки не публикуются.");
+    case S::NumericalLimit:
+        return setup +
+               QStringLiteral(
+                   "Численный предел экстремального сценария. Оценки не публикуются и не обрезаются.");
+    case S::Ready:
+        break;
+    }
+    return setup +
+           QStringLiteral(
+               "\nИсходная доходность от первого закрытия %1%; просадка %2%. "
+               "\nИтоговая доходность 5/50/95%: %3 / %4 / %5%; максимальная просадка 5/50/95%: %6 / %7 / "
+               "%8%. "
+               "\nДоля убыточных сценариев %9% — частота моделирования, не вероятность будущего убытка.")
+               .arg(fmt(b.actual_return * 100), fmt(b.actual_drawdown * 100), fmt(b.returns[0] * 100),
+                    fmt(b.returns[1] * 100), fmt(b.returns[2] * 100), fmt(b.drawdowns[0] * 100),
+                    fmt(b.drawdowns[1] * 100), fmt(b.drawdowns[2] * 100), fmt(b.loss_frequency * 100));
+}
 QString execution_gate(const std::string &gate) {
     static const QMap<QString, QString> gates{
         {"higher entry blocked", QStringLiteral("Вход не подтверждён закрытым старшим блоком")},
@@ -616,6 +651,13 @@ void ResearchPanel::clear_private_state() {
     paper_bars_.clear();
     selected_->clear();
     last_result_ = LabResult{};
+    bootstrap_enabled_->setChecked(false);
+    bootstrap_simulations_->setValue(400);
+    bootstrap_block_->setValue(10);
+    bootstrap_seed_->setValue(42);
+    bootstrap_status_->setText(QStringLiteral("Bootstrap выключен."));
+    bootstrap_chart_->clear();
+    bootstrap_histogram_->clear();
     result_current_ = false;
     source_dirty_ = false;
     cash_->setValue(100000);
@@ -1264,6 +1306,9 @@ void ResearchPanel::calculate() {
     if (bars.size() < 40)
         return;
     const int embargo = gap_->value();
+    const bool bootstrap_enabled = bootstrap_enabled_->isChecked();
+    const quant::BootstrapConfig bootstrap_config{bootstrap_simulations_->value(), bootstrap_block_->value(),
+                                                  static_cast<std::uint32_t>(bootstrap_seed_->value())};
     auto parameters = configuration();
     auto effective_values = parameters.value("values").toObject();
     effective_values.insert("study_lot", static_cast<double>(config.lot));
@@ -1295,8 +1340,8 @@ void ResearchPanel::calculate() {
     calculate_->setEnabled(false);
     status_->setText(QStringLiteral("Считаем в фоне. Окно остаётся доступным; можно отменить расчёт."));
     worker_->setFuture(QtConcurrent::run([bars, complete_bars, series, config, window, lags, adf, kpss, train,
-                                          test, cancelled, parameters, hash, source, holdout, split,
-                                          embargo] {
+                                          test, cancelled, parameters, hash, source, holdout, split, embargo,
+                                          bootstrap_enabled, bootstrap_config] {
         LabResult r;
         r.explained_strategy = config.strategy;
         r.explained_config = config;
@@ -1331,6 +1376,8 @@ void ResearchPanel::calculate() {
             if (cancelled->load())
                 return r;
             r.robustness = quant::robustness(bars, config, cancelled.get());
+            if (bootstrap_enabled && !cancelled->load())
+                r.bootstrap = quant::equity_bootstrap(r.simulation.equity, bootstrap_config, cancelled.get());
             if (holdout && !cancelled->load()) {
                 r.holdout = quant::final_holdout(complete_bars, config, split, embargo);
                 r.has_holdout = true;
@@ -1967,7 +2014,7 @@ bool ResearchPanel::self_test() {
     status_->setText(
         QStringLiteral("ДЕМО лаборатории • проверки расчёта, отмены и виртуального счёта завершены"));
     return r.correlation.common_returns == 359 && r.walk.folds.size() > 0 && paper_ &&
-           paper_->result().halted && features_table_->rowCount() == 100 && higher_test();
+           paper_->result().halted && features_table_->rowCount() == 100 && higher_test() && bootstrap_test();
 }
 bool ResearchPanel::higher_test() {
     demo(true);
@@ -2021,6 +2068,55 @@ bool ResearchPanel::higher_test() {
         return false;
     stop_paper(QStringLiteral("Тест старшего интервала"));
     status_->setText(QStringLiteral("СИНТЕТИЧЕСКОЕ ДЕМО H1 • старший фильтр 2 часа проверен"));
+    return true;
+}
+bool ResearchPanel::bootstrap_test() {
+    bootstrap_enabled_->setChecked(true);
+    bootstrap_simulations_->setValue(100);
+    bootstrap_block_->setValue(10);
+    bootstrap_seed_->setValue(42);
+    const auto saved = configuration();
+    if (!apply_configuration(saved))
+        return false;
+    auto legacy = saved;
+    auto values = legacy.value("values").toObject();
+    for (auto *w :
+         QList<QWidget *>{bootstrap_enabled_, bootstrap_simulations_, bootstrap_block_, bootstrap_seed_})
+        values.remove(w->objectName());
+    legacy["values"] = values;
+    if (!apply_configuration(legacy) || bootstrap_enabled_->isChecked() ||
+        bootstrap_simulations_->value() != 400 || bootstrap_block_->value() != 10 ||
+        bootstrap_seed_->value() != 42 || !apply_configuration(saved))
+        return false;
+    QEventLoop loop;
+    connect(worker_, &QFutureWatcher<LabResult>::finished, &loop, &QEventLoop::quit);
+    calculate();
+    QTimer::singleShot(10000, &loop, &QEventLoop::quit);
+    loop.exec();
+    if (worker_->isRunning() || !result_current_ || !worker_->result().error.isEmpty())
+        return false;
+    const auto &b = last_result_.bootstrap;
+    if (b.status != quant::BootstrapStatus::Ready || b.terminal_returns.size() != 100 ||
+        b.band.size() > 101 || b.observations != static_cast<int>(last_result_.snapshot->bars.size()) - 1)
+        return false;
+    const auto expected = quant::equity_bootstrap(last_result_.simulation.equity, {100, 10, 42});
+    if (expected.terminal_returns != b.terminal_returns ||
+        !report_html().contains(QStringLiteral("Доля убыточных сценариев")))
+        return false;
+    const auto frozen = bootstrap_status_->text();
+    bootstrap_seed_->setValue(43);
+    if (bootstrap_status_->text() != frozen || last_result_.bootstrap.config.seed != 42)
+        return false;
+    bootstrap_seed_->setValue(42);
+    if (configuration() != saved) return false;
+    result_current_ = true;
+    status_->setText(QStringLiteral("СИНТЕТИЧЕСКОЕ ДЕМО • bootstrap проверен; это сценарии, не прогноз"));
+    tabs_->setCurrentIndex(5);
+    if (auto *scroll = qobject_cast<QScrollArea *>(tabs_->widget(5))) {
+        scroll->widget()->layout()->activate();
+        scroll->ensureWidgetVisible(bootstrap_chart_, 0, 0);
+    }
+    update_journey();
     return true;
 }
 } // namespace live

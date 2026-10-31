@@ -2,6 +2,7 @@
 #include "instrument_catalog.hpp"
 #include "market_history.hpp"
 #include "portfolio_input.hpp"
+#include "quant/bootstrap.hpp"
 #include "quant/research.hpp"
 #include "quant/robustness.hpp"
 #include "research_snapshot.hpp"
@@ -26,6 +27,7 @@
 #include <memory>
 namespace live {
 /** Localized model codes shared by the GUI and explicitly exported reports. */
+QString bootstrap_description(const quant::BootstrapResult &result);
 QString execution_gate(const std::string &gate);
 QString execution_reason(const std::string &code);
 struct LabResult {
@@ -40,6 +42,7 @@ struct LabResult {
     quant::SimResult simulation, baseline;
     quant::WalkForward walk;
     quant::Robustness robustness;
+    quant::BootstrapResult bootstrap;
     quant::HoldoutResult holdout;
     bool has_holdout = false;
     QJsonObject parameters;
@@ -114,9 +117,14 @@ class ResearchPanel : public QWidget {
     void fetch_reference();
     bool workbench_test();
     bool higher_test();
+    bool bootstrap_test();
     QDateEdit *from_, *till_;
     QCheckBox *custom_dates_, *reserve_, *expert_, *save_account_, *save_cash_, *manual_metadata_;
     QSpinBox *gap_;
+    QCheckBox *bootstrap_enabled_;
+    QSpinBox *bootstrap_simulations_, *bootstrap_block_, *bootstrap_seed_;
+    QLabel *bootstrap_status_;
+    VisualChart *bootstrap_chart_, *bootstrap_histogram_;
     QDoubleSpinBox *tick_;
     QLabel *preflight_, *holdout_status_, *metadata_, *reference_status_, *release_status_;
     QTableWidget *stability_, *stress_, *runs_table_, *events_;
