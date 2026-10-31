@@ -25,9 +25,13 @@
 #include <map>
 #include <memory>
 namespace live {
+/** Localized model codes shared by the GUI and explicitly exported reports. */
+QString execution_gate(const std::string &gate);
+QString execution_reason(const std::string &code);
 struct LabResult {
     std::shared_ptr<const ReplaySnapshot> snapshot;
     quant::Strategy explained_strategy;
+    quant::SimConfig explained_config;
     quant::Distribution distribution;
     quant::Stationarity stationarity;
     quant::Correlation correlation;
@@ -67,6 +71,7 @@ class ResearchPanel : public QWidget {
     void update_journey();
     void explain_bar(int index);
     QSpinBox *explanation_bar_ = nullptr;
+    QSpinBox *entry_confirmation_, *exit_confirmation_, *cooldown_bars_, *max_holding_bars_, *signal_delay_;
     QLabel *explanation_ = nullptr;
     void next_step();
     bool journey_test();

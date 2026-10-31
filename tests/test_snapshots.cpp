@@ -79,3 +79,58 @@ TEST_CASE("Snapshot limits remain bounded at 5000 candles") {
     CHECK(live::verify_snapshot(bytes, cancelled).startsWith(QStringLiteral("СОВПАЛО:")));
     CHECK_THROWS(live::verify_snapshot(QByteArray(live::snapshot_byte_limit + 1, ' '), cancelled));
 }
+TEST_CASE("Snapshots preserve temporal settings and verify actual execution trace") {
+    auto s = example();
+    s.config.entry_confirmation = 2;
+    s.config.exit_confirmation = 3;
+    s.config.cooldown_bars = 4;
+    s.config.max_holding_bars = 5;
+    s.config.strategy.entry.rules.resize(4);
+    s.config.strategy.exit.rules.resize(4);
+    for (int i = 1; i < 4; ++i) {
+        s.config.strategy.entry.rules[i].enabled = false;
+        s.config.strategy.exit.rules[i].enabled = false;
+    }
+    s.reference = quant::backtest(s.bars, s.config, 0, true);
+    std::atomic<bool> cancelled{false};
+    const auto bytes = live::encode_snapshot(s, "DEMO", "Timing", {});
+    CHECK(live::verify_snapshot(bytes, cancelled).startsWith(QStringLiteral("СОВПАЛО:")));
+    auto root = QJsonDocument::fromJson(bytes).object();
+    SUBCASE("trace tampering is reported") {
+        auto ref = root["reference"].toObject();
+        auto trace = ref["trace"].toArray();
+        auto row = trace[0].toArray();
+        row[3] = row[3].toDouble() + 1;
+        trace[0] = row;
+        ref["trace"] = trace;
+        root["reference"] = ref;
+        CHECK(live::verify_snapshot(encode(root), cancelled).startsWith(QStringLiteral("НЕ СОВПАЛО:")));
+    }
+    SUBCASE("new schema cannot silently default a missing timing setting") {
+        auto c = root["config"].toObject();
+        c.remove("cooldown_bars");
+        root["config"] = c;
+        CHECK_THROWS(live::verify_snapshot(encode(root), cancelled));
+    }
+}
+TEST_CASE("Version one default snapshots replay with explicit legacy timing defaults") {
+    auto s = example();
+    auto root = QJsonDocument::fromJson(live::encode_snapshot(s, "DEMO", "Legacy", {})).object();
+    root["schema"] = 1;
+    root["engine"] = "qpl-single-backtest-v1";
+    auto config = root["config"].toObject();
+    for (const auto *key : {"entry_confirmation", "exit_confirmation", "cooldown_bars", "max_holding_bars"})
+        config.remove(key);
+    root["config"] = config;
+    std::atomic<bool> cancelled{false};
+    CHECK(live::verify_snapshot(encode(root), cancelled).startsWith(QStringLiteral("СОВПАЛО:")));
+}
+TEST_CASE("Maximum-length traced snapshot stays within its byte budget") {
+    auto s = example(5000);
+    s.reference = quant::backtest(s.bars, s.config, 0, true);
+    REQUIRE(s.reference.trace.size() == 5000);
+    const auto bytes = live::encode_snapshot(s, "DEMO", "Trace boundary", {});
+    CHECK(bytes.size() < live::snapshot_byte_limit);
+    std::atomic<bool> cancelled{false};
+    CHECK(live::verify_snapshot(bytes, cancelled).startsWith(QStringLiteral("СОВПАЛО:")));
+}

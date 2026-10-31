@@ -10,7 +10,7 @@
 #include <stdexcept>
 namespace live {
 namespace {
-constexpr auto engine = "qpl-single-backtest-v1";
+constexpr auto engine = "qpl-single-backtest-v2";
 void require(bool condition) {
     if (!condition)
         throw std::invalid_argument("Snapshot schema/data");
@@ -55,7 +55,7 @@ quant::RuleGroup group(const QJsonValue &v) {
     g.all = boolean(o.value("all"));
     require(o.value("rules").isArray());
     const auto list = o.value("rules").toArray();
-    require(list.size() <= 2);
+    require(list.size() <= 4);
     for (const auto &item : list) {
         require(item.isArray());
         const auto a = item.toArray();
@@ -88,6 +88,10 @@ QJsonObject config_json(const quant::SimConfig &c) {
             {"daily", c.daily_loss},
             {"tick", c.tick_size},
             {"delay", c.signal_delay},
+            {"entry_confirmation", c.entry_confirmation},
+            {"exit_confirmation", c.exit_confirmation},
+            {"cooldown_bars", c.cooldown_bars},
+            {"max_holding_bars", c.max_holding_bars},
             {"participation", c.participation},
             {"lot", static_cast<double>(c.lot)},
             {"max_entries", c.max_entries_per_day},
@@ -95,11 +99,16 @@ QJsonObject config_json(const quant::SimConfig &c) {
             {"pessimistic", c.pessimistic},
             {"liquidate", c.liquidate_end}};
 }
-quant::SimConfig config(const QJsonValue &v) {
+quant::SimConfig config(const QJsonValue &v, bool legacy) {
     require(v.isObject());
     const auto o = v.toObject();
     quant::SimConfig c;
-    require(o.keys() == config_json(c).keys());
+    auto expected = config_json(c);
+    if (legacy)
+        for (const auto *key :
+             {"entry_confirmation", "exit_confirmation", "cooldown_bars", "max_holding_bars"})
+            expected.remove(key);
+    require(o.keys() == expected.keys());
     c.strategy.fast = integer(o["fast"]);
     c.strategy.slow = integer(o["slow"]);
     c.strategy.indicator_window = integer(o["window"]);
@@ -107,6 +116,7 @@ quant::SimConfig config(const QJsonValue &v) {
             c.strategy.indicator_window >= 2 && c.strategy.indicator_window <= 500);
     c.strategy.entry = group(o["entry"]);
     c.strategy.exit = group(o["exit"]);
+    require(!legacy || (c.strategy.entry.rules.size() <= 2 && c.strategy.exit.rules.size() <= 2));
     c.strategy.buy_hold = boolean(o["buy_hold"]);
     c.initial_cash = number(o["cash"]);
     c.commission_rate = number(o["commission"]);
@@ -121,6 +131,12 @@ quant::SimConfig config(const QJsonValue &v) {
     c.daily_loss = number(o["daily"]);
     c.tick_size = number(o["tick"]);
     c.signal_delay = integer(o["delay"]);
+    if (!legacy) {
+        c.entry_confirmation = integer(o["entry_confirmation"]);
+        c.exit_confirmation = integer(o["exit_confirmation"]);
+        c.cooldown_bars = integer(o["cooldown_bars"]);
+        c.max_holding_bars = integer(o["max_holding_bars"]);
+    }
     c.participation = number(o["participation"]);
     c.lot = integer(o["lot"]);
     c.max_entries_per_day = integer(o["max_entries"]);
@@ -136,6 +152,25 @@ QJsonArray doubles(const std::vector<double> &values) {
         a.append(std::isfinite(v) ? QJsonValue(v) : QJsonValue(QJsonValue::Null));
     return a;
 }
+QJsonArray trace_json(const std::vector<quant::ExecutionTrace> &trace) {
+    QJsonArray a;
+    for (const auto &t : trace) {
+        require(t.fill_count >= 0 && t.fill_count <= static_cast<int>(t.fills.size()));
+        QJsonArray fills;
+        for (int i = 0; i < t.fill_count; ++i) {
+            const auto &f = t.fills[i];
+            fills.append(QJsonArray{QString::number(f.requested), QString::number(f.quantity),
+                                    QString::number(f.units_after), f.trigger, f.price, f.fee, f.cost,
+                                    f.cash_after, QString::fromStdString(f.reason)});
+        }
+        a.append(QJsonArray{QString::number(t.time), QString::number(t.units_before),
+                            QString::number(t.units_after), t.cash_before, t.cash_after, t.equity,
+                            t.entry_condition, t.exit_condition, t.pending_entry, t.pending_exit,
+                            t.entry_streak, t.exit_streak, t.held_bars, t.cooldown_remaining, t.entry_wait,
+                            t.exit_wait, QString::fromStdString(t.gate), fills});
+    }
+    return a;
+}
 QJsonObject result_json(const quant::SimResult &r) {
     const auto &m = r.metrics;
     QJsonArray journal, times;
@@ -144,20 +179,24 @@ QJsonObject result_json(const quant::SimResult &r) {
                                   e.equity, QString::fromStdString(e.reason)});
     for (auto t : r.times)
         times.append(QString::number(t));
-    return {{"equity", doubles(r.equity)},
-            {"drawdowns", doubles(r.drawdowns)},
-            {"times", times},
-            {"journal", journal},
-            {"metrics", doubles({m.total_return, m.max_drawdown, m.turnover, m.sharpe, m.sortino, m.cagr,
-                                 m.calmar, m.profit_factor, m.win_rate, m.fees, m.execution_cost})},
-            {"fills", m.fills},
-            {"closed_trades", m.closed_trades},
-            {"cash", r.cash},
-            {"unrealized", r.unrealized},
-            {"units", QString::number(r.units)},
-            {"start", QString::number(r.start_time)},
-            {"halted", r.halted},
-            {"halt_reason", QString::fromStdString(r.halt_reason)}};
+    QJsonObject object{
+        {"equity", doubles(r.equity)},
+        {"drawdowns", doubles(r.drawdowns)},
+        {"times", times},
+        {"journal", journal},
+        {"metrics", doubles({m.total_return, m.max_drawdown, m.turnover, m.sharpe, m.sortino, m.cagr,
+                             m.calmar, m.profit_factor, m.win_rate, m.fees, m.execution_cost})},
+        {"fills", m.fills},
+        {"closed_trades", m.closed_trades},
+        {"cash", r.cash},
+        {"unrealized", r.unrealized},
+        {"units", QString::number(r.units)},
+        {"start", QString::number(r.start_time)},
+        {"halted", r.halted},
+        {"halt_reason", QString::fromStdString(r.halt_reason)}};
+    if (!r.trace.empty())
+        object.insert("trace", trace_json(r.trace));
+    return object;
 }
 bool same(const QJsonValue &a, const QJsonValue &b) {
     if (a.type() != b.type())
@@ -195,12 +234,12 @@ QByteArray encode_snapshot(const ReplaySnapshot &s, const QString &source, const
                            const QString &hypothesis) {
     require(!s.bars.empty() && s.bars.size() <= 5000 && s.reference.journal.size() <= 10000 &&
             s.reference.equity.size() <= 5001 && s.reference.drawdowns.size() <= 5001 &&
-            s.reference.times.size() <= 5000);
+            s.reference.times.size() <= 5000 && s.reference.trace.size() <= 5000);
     require(source.size() <= 256 && !name.isEmpty() && name.size() <= 120 && hypothesis.size() <= 2000);
     quant::validate_bars(s.bars);
     const auto bars = bars_json(s.bars);
     const auto bytes = QJsonDocument(QJsonObject{{"format", "QuantPriceLiveSnapshot"},
-                                                 {"schema", 1},
+                                                 {"schema", 2},
                                                  {"engine", engine},
                                                  {"source", source},
                                                  {"name", name},
@@ -221,8 +260,9 @@ QString verify_snapshot(const QByteArray &bytes, const std::atomic<bool> &cancel
     const auto doc = QJsonDocument::fromJson(bytes, &error);
     require(error.error == QJsonParseError::NoError && doc.isObject());
     const auto root = doc.object();
-    require(root.size() == 10 && root["format"] == "QuantPriceLiveSnapshot" && root["schema"] == 1 &&
-            root["engine"] == engine);
+    const bool legacy = root["schema"] == 1 && root["engine"] == "qpl-single-backtest-v1";
+    require(root.size() == 10 && root["format"] == "QuantPriceLiveSnapshot" &&
+            (legacy || (root["schema"] == 2 && root["engine"] == engine)));
     for (const auto &key : {"name", "hypothesis", "source"})
         require(root[key].isString());
     require(!root["name"].toString().isEmpty() && root["name"].toString().size() <= 120 &&
@@ -252,10 +292,14 @@ QString verify_snapshot(const QByteArray &bytes, const std::atomic<bool> &cancel
     }
     quant::validate_bars(bars);
     require(root["sha256"].isString() && root["sha256"].toString() == hash_bars(bars_json(bars)));
-    const auto c = config(root["config"]);
+    const auto c = config(root["config"], legacy);
     if (cancelled.load())
         return QStringLiteral("Проверка отменена.");
-    const auto actual = quant::backtest(bars, c);
+    require(root["reference"].isObject());
+    const bool capture_trace = root["reference"].toObject().contains("trace");
+    require(!capture_trace || (!legacy && root["reference"].toObject()["trace"].isArray() &&
+                               root["reference"].toObject()["trace"].toArray().size() <= 5000));
+    const auto actual = quant::backtest(bars, c, 0, capture_trace);
     if (cancelled.load())
         return QStringLiteral("Проверка отменена.");
     require(root["reference"].isObject());

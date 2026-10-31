@@ -9,6 +9,7 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QJsonDocument>
+#include <QMap>
 #include <QScrollArea>
 #include <QShortcut>
 #include <QSignalBlocker>
@@ -103,6 +104,10 @@ QString reason(const std::string &s) {
         return QStringLiteral("Условия входа выполнены; ждём следующую свечу");
     if (v.startsWith("SIGNAL: exit"))
         return QStringLiteral("Условия выхода выполнены; ждём следующую свечу");
+    if (v.startsWith("SIGNAL: time exit"))
+        return QStringLiteral("Срок удержания достигнут; выход на следующем открытии");
+    if (v.startsWith("time exit"))
+        return QStringLiteral("Выход по сроку удержания на открытии");
     if (v.startsWith("both touched: stop"))
         return QStringLiteral("Стоп и цель в одной свече: сначала стоп");
     if (v.startsWith("both touched"))
@@ -172,6 +177,21 @@ void journal_rows(QTableWidget *table, const quant::SimResult &result) {
     table->setUpdatesEnabled(true);
 }
 } // namespace
+QString execution_gate(const std::string &gate) {
+    static const QMap<QString, QString> gates{
+        {"halt", QStringLiteral("Аварийная остановка; новые входы запрещены")},
+        {"session halt", QStringLiteral("Лимит убытка сессии; новые входы запрещены")},
+        {"entry pending", QStringLiteral("Сигнал входа подтверждён, исполнение ожидает открытия")},
+        {"exit pending", QStringLiteral("Выход ожидает открытия или доступного объёма")},
+        {"holding", QStringLiteral("Позиция удерживается")},
+        {"cooldown", QStringLiteral("Вход запрещён паузой после закрытия позиции")},
+        {"entry limit", QStringLiteral("Достигнут лимит входов за сессию")},
+        {"confirmation", QStringLiteral("Условие есть, подтверждений пока недостаточно")},
+        {"no entry condition", QStringLiteral("Условие входа не выполнено или не прогрето")},
+        {"predefined end", QStringLiteral("Завершение заранее заданного теста")}};
+    return gates.value(QString::fromStdString(gate), QString::fromStdString(gate));
+}
+QString execution_reason(const std::string &code) { return reason(code); }
 ResearchPanel::ResearchPanel(QWidget *parent) : QWidget(parent) {
     auto *layout = new QVBoxLayout(this);
     layout->setSizeConstraint(QLayout::SetNoConstraint);
@@ -711,7 +731,7 @@ QWidget *ResearchPanel::rules_box(const QString &title, std::vector<RuleUi> &con
         QStringLiteral("Должны выполняться ВСЕ отмеченные условия (снимите флажок для «хотя бы одного»)"));
     all->setChecked(true);
     layout->addWidget(all);
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < 4; ++i) {
         RuleUi r;
         r.enabled = new QCheckBox(QString::number(i + 1));
         r.enabled->setAccessibleName(title + QStringLiteral(" • условие ") + QString::number(i + 1));
@@ -800,6 +820,25 @@ QWidget *ResearchPanel::strategy_page() {
     layout->addLayout(periods);
     layout->addWidget(rules_box(QStringLiteral("Когда покупать"), entry_rules_, entry_all_, true));
     layout->addWidget(rules_box(QStringLiteral("Когда продавать"), exit_rules_, exit_all_, false));
+    entry_confirmation_ = integer(1, 1, 50);
+    exit_confirmation_ = integer(1, 1, 50);
+    cooldown_bars_ = integer(0, 0, 500);
+    max_holding_bars_ = integer(0, 0, 5000);
+    signal_delay_ = integer(0, 0, 10);
+    auto *timing = new QWidget;
+    auto *tf = new QFormLayout(timing);
+    tf->addRow(QStringLiteral("Подтвердить вход, закрытий подряд"), entry_confirmation_);
+    tf->addRow(QStringLiteral("Подтвердить выход, закрытий подряд"), exit_confirmation_);
+    tf->addRow(QStringLiteral("Пауза после закрытия позиции, свечей"), cooldown_bars_);
+    tf->addRow(QStringLiteral("Срок удержания, свечей (0 = без срока)"), max_holding_bars_);
+    tf->addRow(QStringLiteral("Дополнительная задержка сигнала, свечей"), signal_delay_);
+    tf->addRow(text(QStringLiteral(
+        "Подтверждение требует истинности всей группы на каждом закрытии. Пересечение — событие одной свечи: "
+        "для выдержки обычно нужны «больше/меньше». Пауза отсчитывает полные закрытия после свечи выхода. "
+        "Срок включает свечу входа; выход — на следующем открытии без дополнительной задержки. Стопы и риск "
+        "не ждут подтверждения или паузы. Эти параметры относятся к стратегии одной акции, не к отдельному "
+        "портфельному движку.")));
+    layout->addWidget(ui::fold(QStringLiteral("Подтверждение, пауза и время исполнения"), timing, true));
     cash_ = number(100000, 100, 1e12, 2);
     lot_ = integer(1, 1, 1000000);
     commission_ = number(.05, 0, 10, 4);
@@ -888,8 +927,8 @@ QWidget *ResearchPanel::report_page() {
     explanation_->setTextFormat(Qt::PlainText);
     explanation_layout->addWidget(explanation_);
     connect(explanation_bar_, qOverload<int>(&QSpinBox::valueChanged), this, &ResearchPanel::explain_bar);
-    layout->addWidget(
-        ui::fold(QStringLiteral("Почему появился сигнал? Разбор условий по свечам"), explanation_box));
+    layout->addWidget(ui::fold(QStringLiteral("Почему возникла или не возникла сделка? Условия и исполнение"),
+                               explanation_box));
     auto *walk_parameters = new QWidget;
     auto *row = new QHBoxLayout(walk_parameters);
     train_ = integer(120, 60, 300);
@@ -1022,6 +1061,11 @@ quant::SimConfig ResearchPanel::settings() const {
     c.pessimistic = ambiguity_->currentIndex() == 0;
     c.annual_periods = annual_->value();
     c.participation = participation_->value() / 100;
+    c.entry_confirmation = entry_confirmation_->value();
+    c.exit_confirmation = exit_confirmation_->value();
+    c.cooldown_bars = cooldown_bars_->value();
+    c.max_holding_bars = max_holding_bars_->value();
+    c.signal_delay = signal_delay_->value();
     return c;
 }
 std::vector<quant::Bar> ResearchPanel::selected_bars() const {
@@ -1105,6 +1149,7 @@ void ResearchPanel::calculate() {
                                           embargo] {
         LabResult r;
         r.explained_strategy = config.strategy;
+        r.explained_config = config;
         r.parameters = parameters;
         r.hash = hash;
         r.source = source;
@@ -1127,7 +1172,7 @@ void ResearchPanel::calculate() {
                                             std::vector<double>(series.size(), quant::unavailable()));
             else
                 r.correlation = quant::aligned_correlation(series);
-            r.simulation = quant::backtest(bars, config);
+            r.simulation = quant::backtest(bars, config, 0, true);
             r.snapshot = std::make_shared<const ReplaySnapshot>(ReplaySnapshot{bars, config, r.simulation});
             r.baseline = quant::buy_hold(bars, config);
             if (cancelled->load())
@@ -1210,6 +1255,41 @@ void ResearchPanel::explain_bar(int index) {
     else
         describe(r.explained_strategy.entry, QStringLiteral("Вход"));
     describe(r.explained_strategy.exit, QStringLiteral("Выход"));
+    if (static_cast<std::size_t>(index) <= r.simulation.trace.size()) {
+        const auto &t = r.simulation.trace[static_cast<std::size_t>(index - 1)];
+        lines << QStringLiteral("\nФАКТИЧЕСКАЯ МОДЕЛЬ ИСПОЛНЕНИЯ\n%1\nАкций: %2 → %3; деньги: %4 → %5 ₽; "
+                                "капитал на закрытии: %6 ₽")
+                     .arg(execution_gate(t.gate))
+                     .arg(t.units_before)
+                     .arg(t.units_after)
+                     .arg(fmt(t.cash_before), fmt(t.cash_after), fmt(t.equity));
+        lines << QStringLiteral("Подтверждения входа: %1 из %2; выхода: %3 из %4. Свечей удержания: %5 (срок "
+                                "%6; 0 — без срока). Пауза на этом закрытии: %7.\nДополнительных открытий до "
+                                "исполнения входа/выхода: %8/%9.")
+                     .arg(t.entry_streak)
+                     .arg(r.explained_config.entry_confirmation)
+                     .arg(t.exit_streak)
+                     .arg(r.explained_config.exit_confirmation)
+                     .arg(t.held_bars)
+                     .arg(r.explained_config.max_holding_bars)
+                     .arg(t.cooldown_remaining)
+                     .arg(t.entry_wait)
+                     .arg(t.exit_wait);
+        for (int i = 0; i < t.fill_count; ++i) {
+            const auto &f = t.fills[i];
+            lines << QStringLiteral(
+                         "%1\nЗапрошено: %2; исполнено: %3 акций. Триггер: %4; модельная цена: %5 ₽. "
+                         "Комиссия: %6 ₽; ухудшение цены: %7 ₽. Деньги после: %8 ₽; позиция: %9.")
+                         .arg(reason(f.reason))
+                         .arg(f.requested)
+                         .arg(f.quantity)
+                         .arg(fmt(f.trigger, 4), fmt(f.price, 4), fmt(f.fee, 4), fmt(f.cost, 4),
+                              fmt(f.cash_after))
+                         .arg(f.units_after);
+        }
+        if (!t.fill_count)
+            lines << QStringLiteral("Попыток исполнения в этой свече не было.");
+    }
     lines << QStringLiteral("\nСигнал не гарантирует сделку: учитываются позиция, деньги, задержка "
                             "исполнения, стопы и лимиты риска. Этот разбор относится только к "
                             "исходным правилам бэктеста, не к подобранным правилам "
@@ -1573,10 +1653,11 @@ bool ResearchPanel::self_test() {
         all.push_back(kv.second);
     r.correlation = quant::aligned_correlation(all);
     const auto config = settings();
-    r.simulation = quant::backtest(bars, config);
+    r.simulation = quant::backtest(bars, config, 0, true);
     r.baseline = quant::buy_hold(bars, config);
     r.walk = quant::walk_forward(bars, config);
     r.explained_strategy = config.strategy;
+    r.explained_config = config;
     last_result_ = r;
     present(r);
     explanation_bar_->setValue(1);
@@ -1585,12 +1666,17 @@ bool ResearchPanel::self_test() {
         return false;
     explanation_bar_->setValue(100);
     const auto frozen_explanation = explanation_->text();
+    if (!frozen_explanation.contains(QStringLiteral("ФАКТИЧЕСКАЯ МОДЕЛЬ ИСПОЛНЕНИЯ")))
+        return false;
     const int old_fast = fast_->value();
+    const int old_confirmation = entry_confirmation_->value();
+    entry_confirmation_->setValue(old_confirmation == 50 ? 1 : 50);
     fast_->setValue(old_fast + 1);
     explain_bar(100);
     if (explanation_->text() != frozen_explanation)
         return false;
     fast_->setValue(old_fast);
+    entry_confirmation_->setValue(old_confirmation);
     explain_bar(0);
     if (!explanation_->text().contains(QStringLiteral("Нет рассчитанной свечи")))
         return false;

@@ -43,7 +43,10 @@ void validate_config(const SimConfig &c) {
         c.risk_per_trade > 1 || c.max_drawdown <= 0 || c.max_drawdown > 1 || c.daily_loss <= 0 ||
         c.daily_loss > 1 || c.participation > 1 || c.lot < 1 || c.lot > 1000000 ||
         c.max_entries_per_day < 1 || c.max_entries_per_day > 1000 || c.annual_periods < 0 ||
-        c.annual_periods > 100000 || c.tick_size > 1e9 || c.signal_delay < 0 || c.signal_delay > 10)
+        c.annual_periods > 100000 || c.tick_size > 1e9 || c.signal_delay < 0 || c.signal_delay > 10 ||
+        c.entry_confirmation < 1 || c.entry_confirmation > 50 || c.exit_confirmation < 1 ||
+        c.exit_confirmation > 50 || c.cooldown_bars < 0 || c.cooldown_bars > 500 || c.max_holding_bars < 0 ||
+        c.max_holding_bars > 5000)
         throw std::invalid_argument("Simulation setting out of range");
     for (const auto &group : {c.strategy.entry, c.strategy.exit}) {
         if (group.rules.size() > 4)
@@ -413,9 +416,10 @@ bool evaluate(const RuleGroup &g, const Features &p, const Features &c) {
     }
     return any && result;
 }
-PaperEngine::PaperEngine(const SimConfig &c)
+PaperEngine::PaperEngine(const SimConfig &c, bool capture_trace)
     : config_(c), features_(c.strategy.fast, c.strategy.slow, c.strategy.indicator_window),
-      cash_(c.initial_cash), peak_(c.initial_cash), session_equity_(c.initial_cash) {
+      cash_(c.initial_cash), peak_(c.initial_cash), session_equity_(c.initial_cash),
+      capture_trace_(capture_trace) {
     validate_config(c);
     current_.fill(unavailable());
     previous_ = current_;
@@ -431,11 +435,13 @@ void PaperEngine::warmup(const Bar &b) {
         throw std::logic_error("Warmup after trading");
     previous_ = current_;
     current_ = features_.push(b);
+    entry_streak_ =
+        evaluate(config_.strategy.entry, previous_, current_) ? std::min(50, entry_streak_ + 1) : 0;
     last_ = b;
 }
 void PaperEngine::arm_from_warmup() {
     if (!config_.strategy.buy_hold)
-        pending_entry_ = evaluate(config_.strategy.entry, previous_, current_);
+        pending_entry_ = entry_streak_ >= config_.entry_confirmation;
     entry_wait_ = config_.signal_delay;
 }
 void PaperEngine::log(const Bar &b, std::int64_t qty, double price, const std::string &reason) {
@@ -444,7 +450,8 @@ void PaperEngine::log(const Bar &b, std::int64_t qty, double price, const std::s
 }
 void PaperEngine::entry(const Bar &b) {
     pending_entry_ = false;
-    if (units_ || halted_ || session_halted_ || entries_today_ >= config_.max_entries_per_day)
+    if (units_ || halted_ || session_halted_ || cooldown_remaining_ > 0 ||
+        entries_today_ >= config_.max_entries_per_day)
         return;
     const double raw_price = b.open * (1 + (config_.spread_bps / 2 + config_.slippage_bps) / 10000);
     const double price = config_.tick_size > 0
@@ -466,15 +473,18 @@ void PaperEngine::entry(const Bar &b) {
     }
     lots = std::min(lots, static_cast<long double>(1000000000 / config_.lot));
     std::int64_t qty = static_cast<std::int64_t>(lots) * config_.lot;
+    const auto requested = qty;
     if (config_.participation > 0)
         qty = std::min(qty, liquidity_cap_);
     if (qty <= 0) {
         log(b, 0, b.open, "entry rejected: cash/risk/previous-volume lot limit");
+        trace_fill(requested, 0, b.open, b.open, 0, "entry rejected: cash/risk/previous-volume lot limit");
         return;
     }
     const double notional = qty * price, fee = notional * config_.commission_rate + config_.fixed_fee;
     if (notional + fee > cash_ + 1e-7) {
         log(b, 0, price, "entry rejected: cash including fees");
+        trace_fill(requested, 0, b.open, price, 0, "entry rejected: cash including fees");
         return;
     }
     if (config_.participation > 0)
@@ -483,6 +493,8 @@ void PaperEngine::entry(const Bar &b) {
     result_.metrics.execution_cost += qty * (price - b.open);
     cash_ -= notional + fee;
     units_ = qty;
+    held_bars_ = 0;
+    entry_streak_ = exit_streak_ = 0;
     entry_price_ = price;
     cost_basis_ = notional + fee;
     trade_profit_ = 0;
@@ -491,6 +503,8 @@ void PaperEngine::entry(const Bar &b) {
     ++entries_today_;
     bought_ = true;
     log(b, qty, price, "BUY: previous closed-bar rule; next open; unfilled remainder cancelled");
+    trace_fill(requested, qty, b.open, price, fee,
+               "BUY: previous closed-bar rule; next open; unfilled remainder cancelled");
 }
 void PaperEngine::exit(const Bar &b, double raw, const std::string &reason, bool unlimited) {
     if (!units_) {
@@ -502,7 +516,9 @@ void PaperEngine::exit(const Bar &b, double raw, const std::string &reason, bool
         qty = std::min(qty, liquidity_cap_);
     if (qty <= 0) {
         pending_exit_ = true;
+        exit_wait_ = 0;
         log(b, 0, raw, "exit pending: previous-volume cap");
+        trace_fill(-units_, 0, raw, raw, 0, "exit pending: previous-volume cap");
         return;
     }
     const double raw_price = raw * (1 - (config_.spread_bps / 2 + config_.slippage_bps) / 10000);
@@ -510,6 +526,7 @@ void PaperEngine::exit(const Bar &b, double raw, const std::string &reason, bool
         config_.tick_size > 0
             ? std::max(0.0, std::floor(raw_price / config_.tick_size + 1e-10) * config_.tick_size)
             : raw_price;
+    const auto requested = -units_;
     const double notional = qty * price, fee = notional * config_.commission_rate + config_.fixed_fee;
     const double allocated = cost_basis_ * static_cast<double>(qty) / units_;
     const double pnl = notional - fee - allocated;
@@ -524,8 +541,15 @@ void PaperEngine::exit(const Bar &b, double raw, const std::string &reason, bool
     traded_ += notional;
     ++result_.metrics.fills;
     log(b, -qty, price, reason);
+    trace_fill(requested, -qty, raw, price, fee, reason);
     pending_exit_ = units_ > 0;
+    if (pending_exit_)
+        exit_wait_ = 0;
     if (!units_) {
+        held_bars_ = entry_streak_ = exit_streak_ = 0;
+        cooldown_remaining_ = config_.cooldown_bars;
+        closed_this_bar_ = true;
+        time_exit_ = false;
         ++result_.metrics.closed_trades;
         if (trade_profit_ > 0) {
             ++wins_;
@@ -534,6 +558,28 @@ void PaperEngine::exit(const Bar &b, double raw, const std::string &reason, bool
             gross_loss_ -= trade_profit_;
         cost_basis_ = 0;
     }
+}
+void PaperEngine::trace_fill(std::int64_t requested, std::int64_t quantity, double trigger, double price,
+                             double fee, const std::string &reason) {
+    if (!capture_trace_)
+        return;
+    auto *trace = tracing_step_ ? &trace_ : (result_.trace.empty() ? nullptr : &result_.trace.back());
+    if (!trace)
+        return;
+    if (trace->fill_count >= static_cast<int>(trace->fills.size()))
+        throw std::logic_error("Execution trace bound");
+    auto &fill = trace->fills[trace->fill_count++];
+    fill = {requested,
+            quantity,
+            units_,
+            trigger,
+            price,
+            fee,
+            quantity
+                ? std::abs(static_cast<double>(quantity)) * (quantity > 0 ? price - trigger : trigger - price)
+                : 0,
+            cash_,
+            reason};
 }
 void PaperEngine::request_stop(const std::string &reason) {
     halted_ = true;
@@ -560,6 +606,14 @@ void PaperEngine::step(const Bar &b) {
     validate_bars({b});
     if (last_.time && (b.time <= last_.time || b.time < last_.end))
         throw std::invalid_argument("Non-increasing engine time");
+    closed_this_bar_ = false;
+    if (capture_trace_) {
+        trace_ = {};
+        trace_.time = b.time;
+        trace_.units_before = units_;
+        trace_.cash_before = cash_;
+        tracing_step_ = true;
+    }
     const auto day = (b.time + static_cast<std::int64_t>(b.utc_offset_seconds) * 1000) / day_ms;
     if (day != session_) {
         session_ = day;
@@ -571,7 +625,9 @@ void PaperEngine::step(const Bar &b) {
     liquidity_cap_ = static_cast<std::int64_t>(std::min(1000000000.0L, std::floor(volume_cap))) * config_.lot;
     if (halted_ || (pending_exit_ && exit_wait_-- <= 0))
         exit(b, b.open,
-             halted_ ? "risk/manual halt: next open" : "SELL: previous closed-bar exit; next open");
+             halted_      ? "risk/manual halt: next open"
+             : time_exit_ ? "time exit: next open"
+                          : "SELL: previous closed-bar exit; next open");
     if (pending_entry_ && !units_ && entry_wait_-- <= 0)
         entry(b);
     if (units_) {
@@ -597,6 +653,16 @@ void PaperEngine::step(const Bar &b) {
     last_ = b;
     mark(b);
     const double equity = result_.equity.back();
+    const bool entry_condition = evaluate(config_.strategy.entry, previous_, current_),
+               exit_condition = evaluate(config_.strategy.exit, previous_, current_);
+    if (units_) {
+        ++held_bars_;
+        exit_streak_ = exit_condition ? std::min(50, exit_streak_ + 1) : 0;
+        entry_streak_ = 0;
+    } else {
+        entry_streak_ = !cooldown_remaining_ && entry_condition ? std::min(50, entry_streak_ + 1) : 0;
+        exit_streak_ = 0;
+    }
     if (equity <= 0 || result_.drawdowns.back() >= config_.max_drawdown) {
         if (!halted_)
             log(b, 0, b.close, "RISK: drawdown/equity limit; exit next available open");
@@ -610,19 +676,51 @@ void PaperEngine::step(const Bar &b) {
     }
     if (!halted_ && !session_halted_) {
         if (units_) {
-            if (!pending_exit_ && evaluate(config_.strategy.exit, previous_, current_)) {
+            if (!time_exit_ && config_.max_holding_bars > 0 && held_bars_ >= config_.max_holding_bars) {
+                exit_wait_ = 0;
+                time_exit_ = pending_exit_ = true;
+                log(b, 0, b.close, "SIGNAL: time exit, pending next open");
+            } else if (!pending_exit_ && exit_streak_ >= config_.exit_confirmation) {
                 exit_wait_ = config_.signal_delay;
                 pending_exit_ = true;
                 log(b, 0, b.close, "SIGNAL: exit, pending next open");
             }
         } else if (!pending_entry_ && !config_.strategy.buy_hold &&
-                   entries_today_ < config_.max_entries_per_day &&
-                   evaluate(config_.strategy.entry, previous_, current_)) {
+                   entries_today_ < config_.max_entries_per_day && !cooldown_remaining_ &&
+                   entry_streak_ >= config_.entry_confirmation) {
             pending_entry_ = true;
             entry_wait_ = config_.signal_delay;
             log(b, 0, b.close, "SIGNAL: entry, pending next open");
         }
     }
+    if (capture_trace_) {
+        trace_.units_after = units_;
+        trace_.cash_after = cash_;
+        trace_.equity = equity;
+        trace_.entry_condition = entry_condition;
+        trace_.exit_condition = exit_condition;
+        trace_.entry_streak = entry_streak_;
+        trace_.exit_streak = exit_streak_;
+        trace_.held_bars = held_bars_;
+        trace_.cooldown_remaining = cooldown_remaining_;
+        trace_.pending_entry = pending_entry_;
+        trace_.pending_exit = pending_exit_;
+        trace_.entry_wait = std::max(0, entry_wait_);
+        trace_.exit_wait = std::max(0, exit_wait_);
+        trace_.gate = halted_                                         ? "halt"
+                      : session_halted_                               ? "session halt"
+                      : pending_exit_                                 ? "exit pending"
+                      : pending_entry_                                ? "entry pending"
+                      : units_                                        ? "holding"
+                      : cooldown_remaining_                           ? "cooldown"
+                      : entries_today_ >= config_.max_entries_per_day ? "entry limit"
+                      : entry_condition                               ? "confirmation"
+                                                                      : "no entry condition";
+        result_.trace.push_back(std::move(trace_));
+        tracing_step_ = false;
+    }
+    if (cooldown_remaining_ > 0 && !closed_this_bar_)
+        --cooldown_remaining_;
 }
 void PaperEngine::finish() {
     if (finished_)
@@ -633,6 +731,14 @@ void PaperEngine::finish() {
         peak_ = std::max(peak_, cash_);
         result_.drawdowns.back() = std::max(0.0, 1 - cash_ / peak_);
         result_.metrics.max_drawdown = std::max(result_.metrics.max_drawdown, result_.drawdowns.back());
+        if (capture_trace_ && !result_.trace.empty()) {
+            auto &trace = result_.trace.back();
+            trace.units_after = units_;
+            trace.cash_after = cash_;
+            trace.equity = cash_;
+            trace.pending_entry = trace.pending_exit = false;
+            trace.gate = "predefined end";
+        }
     }
     finished_ = true;
 }
@@ -680,11 +786,12 @@ SimResult PaperEngine::result() const {
     }
     return out;
 }
-SimResult backtest(const std::vector<Bar> &bars, const SimConfig &config, std::size_t start) {
+SimResult backtest(const std::vector<Bar> &bars, const SimConfig &config, std::size_t start,
+                   bool capture_trace) {
     validate_bars(bars);
     if (start >= bars.size())
         throw std::invalid_argument("Test start");
-    PaperEngine engine(config);
+    PaperEngine engine(config, capture_trace);
     for (std::size_t i = 0; i < start; ++i)
         engine.warmup(bars[i]);
     if (start)
@@ -697,6 +804,8 @@ SimResult backtest(const std::vector<Bar> &bars, const SimConfig &config, std::s
 SimResult buy_hold(const std::vector<Bar> &bars, const SimConfig &config) {
     auto baseline = config;
     baseline.strategy.buy_hold = true;
+    baseline.entry_confirmation = baseline.exit_confirmation = 1;
+    baseline.cooldown_bars = baseline.max_holding_bars = 0;
     baseline.stop_fraction = baseline.target_fraction = 0;
     baseline.max_drawdown = baseline.daily_loss = 1;
     baseline.participation = 0;

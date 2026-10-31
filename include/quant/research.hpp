@@ -92,6 +92,9 @@ struct SimConfig {
     double risk_per_trade = 0.01, max_drawdown = 0.2, daily_loss = 0.05;
     double tick_size = 0;     // zero only for synthetic/explicit manual metadata
     int signal_delay = 0;     // additional closed bars before signal execution; stops remain active
+    int entry_confirmation = 1, exit_confirmation = 1; // consecutive true closed-bar groups, 1..50
+    int cooldown_bars = 0;    // full subsequent closes blocked after flattening; exit bar is not counted
+    int max_holding_bars = 0; // includes entry bar; 0 disables; exit next open without signal delay
     double participation = 0; // cap using PREVIOUS bar volume; zero disables this approximation
     std::int64_t lot = 1;
     int max_entries_per_day = 10, annual_periods = 0;
@@ -109,11 +112,29 @@ struct Metrics {
     double fees = 0, execution_cost = 0; // cash commissions and adverse fill vs model trigger
     int fills = 0, closed_trades = 0;
 };
+/** Actual model attempt/fill, including liquidity rejection. Prices are model assumptions, not quotes. */
+struct ExecutionFill {
+    std::int64_t requested = 0, quantity = 0, units_after = 0;
+    double trigger = 0, price = 0, fee = 0, cost = 0, cash_after = 0;
+    std::string reason;
+};
+/** One bounded trace per processed bar. Capturing is opt-in; optimizers do not capture traces. */
+struct ExecutionTrace {
+    std::int64_t time = 0, units_before = 0, units_after = 0;
+    double cash_before = 0, cash_after = 0, equity = 0;
+    bool entry_condition = false, exit_condition = false, pending_entry = false, pending_exit = false;
+    int entry_streak = 0, exit_streak = 0, held_bars = 0, cooldown_remaining = 0;
+    int entry_wait = 0, exit_wait = 0;
+    std::string gate;
+    std::array<ExecutionFill, 4> fills{}; // open exit, entry, intrabar exit, optional final liquidation
+    int fill_count = 0;
+};
 struct SimResult {
     std::vector<double> equity, drawdowns;
     std::vector<std::int64_t> times;
     std::int64_t start_time = 0;
     std::vector<JournalEntry> journal;
+    std::vector<ExecutionTrace> trace;
     Metrics metrics;
     double cash = 0, unrealized = 0;
     std::int64_t units = 0;
@@ -124,7 +145,7 @@ struct SimResult {
  */
 class PaperEngine {
   public:
-    explicit PaperEngine(const SimConfig &config);
+    explicit PaperEngine(const SimConfig &config, bool capture_trace = false);
     void warmup(const Bar &bar);
     void arm_from_warmup();
     void step(const Bar &bar);
@@ -137,6 +158,8 @@ class PaperEngine {
     void exit(const Bar &bar, double price, const std::string &reason, bool unlimited = false);
     void log(const Bar &bar, std::int64_t quantity, double price, const std::string &reason);
     void mark(const Bar &bar);
+    void trace_fill(std::int64_t requested, std::int64_t quantity, double trigger, double price, double fee,
+                    const std::string &reason);
     SimConfig config_;
     CandleFeatures features_;
     Features current_{}, previous_{};
@@ -149,8 +172,12 @@ class PaperEngine {
     bool pending_entry_ = false, pending_exit_ = false, halted_ = false, session_halted_ = false,
          bought_ = false, finished_ = false;
     std::int64_t liquidity_cap_ = 0;
+    int entry_streak_ = 0, exit_streak_ = 0, held_bars_ = 0, cooldown_remaining_ = 0;
+    bool time_exit_ = false, closed_this_bar_ = false, capture_trace_ = false, tracing_step_ = false;
+    ExecutionTrace trace_;
 };
-SimResult backtest(const std::vector<Bar> &bars, const SimConfig &config, std::size_t start = 0);
+SimResult backtest(const std::vector<Bar> &bars, const SimConfig &config, std::size_t start = 0,
+                   bool capture_trace = false);
 SimResult buy_hold(const std::vector<Bar> &bars, const SimConfig &config);
 struct Fold {
     std::size_t train_begin = 0, test_begin = 0, test_end = 0;
