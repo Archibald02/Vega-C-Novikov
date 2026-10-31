@@ -30,7 +30,7 @@ struct PerformanceAttribution {
 /** Gregorian month of bar.time using the bar's UTC offset; no exchange-session calendar inference. */
 int opening_month(const Bar &bar);
 /** Describe one frozen full backtest, without rerunning signals or resetting positions at boundaries.
- * Equity includes initial cash. Period P&L telescopes to total P&L. Trade attribution requires a complete,
+ * Equity includes initial cash. Period profit/loss telescopes to total profit/loss. Trade attribution requires a complete,
  * internally consistent execution trace; the bounded journal is never used to reconstruct missing fills.
  * At most 5000 bars/positions/months; cancellation publishes no partial report. */
 PerformanceAttribution performance_attribution(const std::vector<Bar> &bars, const SimResult &simulation,

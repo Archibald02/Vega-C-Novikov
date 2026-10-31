@@ -202,13 +202,13 @@ QString ResearchPanel::attribution_html(bool compact) const {
                        "перенастраивают стратегию. "
                        "Неполные периоды не дополняются. Просадка начинается от капитала границы периода. "
                        "Вклад позиции — процентные пункты исходного капитала; "
-                       "P&L уже содержит издержки. Открытая позиция учитывает её частичные продажи и оценку "
-                       "остатка. Доля лучших рассчитана от суммы положительных P&L закрытых позиций. "
+                       "P&amp;L уже содержит издержки. Открытая позиция учитывает её частичные продажи и оценку "
+                       "остатка. Доля лучших рассчитана от суммы положительных P&amp;L закрытых позиций. "
                        "Отчёт не является результатом удаления сделок или новым прогнозом. — означает "
                        "недоступную оценку.</p>");
     auto periods = [&](const std::vector<quant::PerformancePeriod> &rows, bool months) {
         QString out = months ? "<h3>Месяцы</h3>" : "<h3>Последовательные участки</h3>";
-        out += "<table><tr><th>Период</th><th>Свечей</th><th>Капитал начало / конец, ₽</th><th>P&L, "
+        out += "<table><tr><th>Период</th><th>Свечей</th><th>Капитал начало / конец, ₽</th><th>P&amp;L, "
                "₽</th><th>Доходность, %</th><th>Просадка, %</th><th>Комиссии, ₽</th></tr>";
         const auto count = compact ? std::min<std::size_t>(120, rows.size()) : rows.size();
         for (std::size_t i = 0; i < count; ++i) {
@@ -227,7 +227,7 @@ QString ResearchPanel::attribution_html(bool compact) const {
     if (a.trace_status != quant::AttributionTrace::Ready || !r.snapshot)
         return html;
     html += QStringLiteral("<h3>Закрытые позиции</h3><table><tr><th>Свеча входа</th><th>Свеча "
-                           "выхода</th><th>Акций</th><th>Исполнений</th><th>P&L, ₽</th><th>Комиссии, "
+                           "выхода</th><th>Акций</th><th>Исполнений</th><th>P&amp;L, ₽</th><th>Комиссии, "
                            "₽</th><th>Доходность позиции, %</th><th>Вклад, п.п.</th></tr>");
     const auto count = compact ? std::min<std::size_t>(500, a.positions.size()) : a.positions.size();
     for (std::size_t i = 0; i < count; ++i) {
