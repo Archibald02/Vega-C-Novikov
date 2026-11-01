@@ -96,6 +96,7 @@ void MarketHistory::cancel(bool preserve_checkpoint) {
         checkpoint_ = {};
     ++generation_;
     active_ = false;
+    extension_.reset();
     accumulated_.clear();
     verifying_checkpoint_ = false;
     if (reply_) {
@@ -155,7 +156,11 @@ void MarketHistory::load_range(const QString &symbol, const QDate &from, const Q
     emit history_changed();
     page(symbol, preset, key, from, till, interval, generation_, 0);
 }
-void MarketHistory::complete(const QString &symbol, int preset, const QString &key) {
+void MarketHistory::complete(const QString &symbol, int preset, const QString &key, const Entry *comparison) {
+    if (extension_) {
+        complete_extension();
+        return;
+    }
     active_ = false;
     if (accumulated_.isEmpty()) {
         emit failed(QStringLiteral("Нет доступной публичной истории за выбранный период."));
@@ -173,9 +178,14 @@ void MarketHistory::complete(const QString &symbol, int preset, const QString &k
     info.fetched_ms = now_ms();
     info.limited = request_.limited;
     info.resumed = request_.resumed;
+    info.extended = request_.extended;
+    info.checked_from = request_.checked_from;
+    info.base_revision = request_.base_revision;
+    info.reused_bars = request_.reused_bars;
     info.sha256 = content_hash(accumulated_);
-    const auto previous = cache_.constFind(key);
-    if (previous != cache_.cend()) {
+    const auto found = cache_.constFind(key);
+    const Entry *previous = comparison ? comparison : (found == cache_.cend() ? nullptr : &found.value());
+    if (previous) {
         info.comparable = true;
         info.revision = previous->info.revision;
         qsizetype a = 0, b = 0;
@@ -198,10 +208,11 @@ void MarketHistory::complete(const QString &symbol, int preset, const QString &k
                 ++b;
             }
         }
-        if (info.sha256 != previous->info.sha256)
-            info.revision = ++revision_;
-    } else
-        info.revision = ++revision_;
+    }
+    const Entry *revision_base = found == cache_.cend() ? previous : &found.value();
+    info.revision = (revision_base && info.sha256 == revision_base->info.sha256)
+                        ? revision_base->info.revision
+                        : ++revision_;
     if (cache_.size() >= 8 && !cache_.contains(key)) {
         auto oldest = cache_.begin();
         for (auto it = cache_.begin(); it != cache_.end(); ++it)
@@ -259,6 +270,10 @@ void MarketHistory::page(const QString &symbol, int preset, const QString &key, 
             if (verifying_checkpoint_) {
                 verifying_checkpoint_ = false;
                 if (page_hash(block) != checkpoint_.page_hash) {
+                    if (extension_) {
+                        restart_extension(QStringLiteral("Изменилась контрольная страница догрузки."));
+                        return;
+                    }
                     checkpoint_ = {};
                     accumulated_.clear();
                     received_ = rejected_ = 0;
@@ -302,6 +317,7 @@ void MarketHistory::page(const QString &symbol, int preset, const QString &key, 
             if (raw == 500 && accumulated_.size() > before && accumulated_.size() < 5000) {
                 checkpoint_ = {request_,  accumulated_, page_hash(block), received_,
                                rejected_, offset,       offset + raw,     now_ms()};
+                checkpoint_.extension = extension_;
                 emit history_changed();
             }
             if (generation != generation_)
@@ -334,6 +350,7 @@ void MarketHistory::page(const QString &symbol, int preset, const QString &key, 
 }
 void MarketHistory::fail(const QString &message, bool retain) {
     active_ = false;
+    extension_.reset();
     accumulated_.clear();
     verifying_checkpoint_ = false;
     if (!retain && checkpoint_.request.key == request_.key)
@@ -356,13 +373,14 @@ HistoryCheckpointInfo MarketHistory::checkpoint() const {
     const auto &c = checkpoint_;
     return {true,
             c.request.symbol,
-            c.request.from,
+            c.extension ? c.extension->base.info.from : c.request.from,
             c.request.till,
             c.request.interval,
             c.request.preset,
             static_cast<int>(c.bars.size()),
             c.next_offset,
-            c.saved_ms};
+            c.saved_ms,
+            static_cast<bool>(c.extension)};
 }
 void MarketHistory::discard_checkpoint() {
     if (active_)
@@ -402,6 +420,7 @@ bool MarketHistory::resume() {
     const auto saved = checkpoint_;
     cancel();
     request_ = saved.request;
+    extension_ = saved.extension;
     request_.resumed = true;
     accumulated_ = saved.bars;
     received_ = saved.received;

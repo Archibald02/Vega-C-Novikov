@@ -5,6 +5,7 @@
 #include <QPointer>
 #include <QVector>
 #include <functional>
+#include <memory>
 namespace live {
 struct Candle {
     qint64 time_ms = 0;
@@ -18,7 +19,10 @@ struct HistorySetInfo {
     int interval = 24, preset = 1, bars = 0, added = 0, changed = 0, removed = 0;
     quint64 revision = 0;
     qint64 fetched_ms = 0, started_ms = 0;
-    bool comparable = false, limited = false, resumed = false;
+    bool comparable = false, limited = false, resumed = false, extended = false;
+    QDate checked_from;
+    quint64 base_revision = 0;
+    int reused_bars = 0;
 };
 struct HistoryCheckpointInfo {
     bool available = false;
@@ -26,6 +30,7 @@ struct HistoryCheckpointInfo {
     QDate from, till;
     int interval = 24, preset = 1, bars = 0, next_offset = 0;
     qint64 saved_ms = 0;
+    bool extending = false;
 };
 /** Only public MOEX candles, user-triggered, paginated requests, 8-entry RAM cache, no token. */
 class MarketHistory : public QObject {
@@ -46,6 +51,8 @@ class MarketHistory : public QObject {
     bool restore(const QString &key);
     /** Revalidates the last successful page before continuing a RAM-only checkpoint. */
     bool resume();
+    /** Extend only the right edge of a complete RAM dataset, verifying an overlapping tail. */
+    bool extend(const QString &key, const QDate &till);
     void discard_checkpoint();
     QVector<HistorySetInfo> datasets() const;
     HistoryCheckpointInfo checkpoint() const;
@@ -68,15 +75,26 @@ class MarketHistory : public QObject {
         int received = 0, rejected = 0;
         HistorySetInfo info;
     };
+    struct Extension {
+        Entry base;
+        QDate target_till, checked_from;
+        QString target_key;
+    };
+    void complete_extension();
+    void restart_extension(const QString &reason);
+    std::shared_ptr<const Extension> extension_;
     void page(const QString &symbol, int preset, const QString &key, QDate from, QDate till, int interval,
               quint64 generation, int offset);
-    void complete(const QString &symbol, int preset, const QString &key);
+    void complete(const QString &symbol, int preset, const QString &key, const Entry *comparison = nullptr);
     struct Request {
         QString key, symbol;
         QDate from, till;
         int interval = 24, preset = 1;
         qint64 started_ms = 0;
-        bool limited = false, resumed = false;
+        bool limited = false, resumed = false, extended = false;
+        QDate checked_from;
+        quint64 base_revision = 0;
+        int reused_bars = 0;
     } request_;
     struct Checkpoint {
         Request request;
@@ -84,6 +102,7 @@ class MarketHistory : public QObject {
         QByteArray page_hash;
         int received = 0, rejected = 0, last_offset = 0, next_offset = 0;
         qint64 saved_ms = 0;
+        std::shared_ptr<const Extension> extension;
     } checkpoint_;
     void fail(const QString &message, bool retain);
     qint64 now_ms() const { return clock_ ? clock_() : QDateTime::currentMSecsSinceEpoch(); }

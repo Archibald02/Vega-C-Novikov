@@ -1,17 +1,19 @@
 #include "quote_parser.hpp"
 #include "research_panel.hpp"
 #include "ui_helpers.hpp"
-#include <QEventLoop>
 #include <QCoreApplication>
+#include <QEventLoop>
 #include <QFormLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QToolButton>
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QTimeZone>
+#include <QToolButton>
+#include <QUrlQuery>
 namespace live {
 namespace {
 QString time_text(qint64 ms) {
@@ -107,6 +109,23 @@ void ResearchPanel::setup_history_manager() {
     row->addWidget(history_refresh_);
     layout->addLayout(row);
     layout->addWidget(clear);
+    auto *extend_row = new QHBoxLayout;
+    history_extend_till_ =
+        new QDateEdit(QDateTime::currentDateTimeUtc().toTimeZone(QTimeZone("Europe/Moscow")).date());
+    history_extend_till_->setCalendarPopup(true);
+    history_extend_till_->setDisplayFormat("dd.MM.yyyy");
+    history_extend_till_->setMinimumDate(QDate(1990, 1, 1));
+    history_extend_till_->setMaximumDate(history_extend_till_->date());
+    history_extend_till_->setAccessibleName(QStringLiteral("Догрузить по дату включительно"));
+    history_extend_ = new QPushButton(QStringLiteral("Догрузить более поздние даты"));
+    extend_row->addWidget(history_extend_till_);
+    extend_row->addWidget(history_extend_);
+    layout->addLayout(extend_row);
+    layout->addWidget(paragraph(QStringLiteral(
+        "Догрузка доступна для полного набора и более поздней даты. Пересечение у правой границы "
+        "перепроверяется; ранняя часть берётся из RAM. "
+        "Если пересечение изменилось или превышен лимит объединения, весь расширенный период загружается "
+        "заново. Для глубокой проверки старой истории используйте полную перепроверку.")));
     history_checkpoint_ = paragraph({});
     layout->addWidget(history_checkpoint_);
     history_resume_ = new QPushButton(QStringLiteral("Продолжить незавершённый набор"));
@@ -151,6 +170,22 @@ void ResearchPanel::setup_history_manager() {
             if (info.key == key) {
                 prepare_history_set(info.symbol, info.from, info.till, info.interval);
                 begin_history_load(true);
+                return;
+            }
+    });
+    connect(history_extend_till_, &QDateEdit::dateChanged, this, [this] { refresh_history_manager(); });
+    connect(history_extend_, &QPushButton::clicked, this, [this] {
+        const auto key = history_sets_->currentData().toString();
+        const auto till = history_extend_till_->date();
+        for (const auto &info : loader_.datasets())
+            if (info.key == key) {
+                prepare_history_set(info.symbol, info.from, till, info.interval);
+                if (!loader_.extend(key, till) && loading_) {
+                    loading_ = false;
+                    load_->setEnabled(true);
+                    period_->setEnabled(true);
+                }
+                refresh_history_manager();
                 return;
             }
     });
@@ -203,17 +238,30 @@ void ResearchPanel::refresh_history_manager() {
         history_details_->setText(
             QStringLiteral("Собрано %1 → %2. SHA-256 %3\n%4. %5%6")
                 .arg(time_text(info.started_ms), time_text(info.fetched_ms), info.sha256,
-                     info.comparable ? QStringLiteral("К предыдущему набору: +%1 / изменено %2 / удалено %3")
-                                           .arg(info.added)
-                                           .arg(info.changed)
-                                           .arg(info.removed)
-                                     : QStringLiteral("Предыдущего набора для сравнения нет"),
+                     info.comparable
+                         ? (info.extended
+                                ? QStringLiteral("К выбранной базе: +%1 / изменено %2 / удалено %3")
+                                : QStringLiteral("К предыдущему набору: +%1 / изменено %2 / удалено %3"))
+                               .arg(info.added)
+                               .arg(info.changed)
+                               .arg(info.removed)
+                         : QStringLiteral("Предыдущего набора для сравнения нет"),
                      info.resumed
                          ? QStringLiteral("Есть возобновлённые страницы; ранняя часть не перепроверялась. ")
                          : QString(),
                      info.limited ? QStringLiteral("Лимит 5000: период может быть неполным.") : QString()));
     } else
         history_details_->setText(QStringLiteral("Готовых наборов в RAM нет."));
+    if (selected >= 0 && sets[selected].extended)
+        history_details_->setText(
+            history_details_->text() +
+            QStringLiteral("\nДогрузка от ред. %1: %2 ранних свечей из RAM; перепроверено с %3.")
+                .arg(sets[selected].base_revision)
+                .arg(sets[selected].reused_bars)
+                .arg(sets[selected].checked_from.toString(Qt::ISODate)));
+    const QSignalBlocker date_blocker(history_extend_till_);
+    history_extend_till_->setMaximumDate(
+        QDateTime::currentDateTimeUtc().toTimeZone(QTimeZone("Europe/Moscow")).date());
     const auto c = loader_.checkpoint();
     history_checkpoint_->setText(
         c.available
@@ -224,10 +272,16 @@ void ResearchPanel::refresh_history_manager() {
                   .arg(time_text(c.saved_ms))
             : QStringLiteral(
                   "Действующей контрольной точки нет. Она появляется после полной принятой страницы."));
+    if (c.available && c.extending)
+        history_checkpoint_->setText(history_checkpoint_->text() +
+                                     QStringLiteral(" Догрузка: счётчик относится к сетевому хвосту."));
     const bool idle = !loading_ && !loader_.busy() && (!worker_ || !worker_->isRunning());
     history_restore_->setEnabled(idle && selected >= 0);
     history_refresh_->setEnabled(idle && selected >= 0);
     history_resume_->setEnabled(idle && c.available);
+    history_extend_->setEnabled(idle && selected >= 0 && !sets[selected].limited &&
+                                history_extend_till_->date() > sets[selected].till &&
+                                sets[selected].from.daysTo(history_extend_till_->date()) <= 7305);
 }
 bool ResearchPanel::history_manager_test() {
     QTcpServer server;
@@ -246,9 +300,17 @@ bool ResearchPanel::history_manager_test() {
                 *done = true;
                 ++requests;
                 QJsonArray rows;
-                for (int i = 0; i < 40; ++i)
-                    rows.append(QJsonArray{QDate(2024, 1, 1).addDays(i).toString("yyyy-MM-dd") + " 00:00:00",
-                                           100, 101, 99, 100, 10});
+                const auto path = QString::fromLatin1(bytes->split(' ').value(1));
+                const QUrlQuery query(QUrl{path});
+                const auto from = QDate::fromString(query.queryItemValue("from"), Qt::ISODate),
+                           till = QDate::fromString(query.queryItemValue("till"), Qt::ISODate);
+                for (int i = 0; i < 42; ++i) {
+                    const auto date =
+                        i < 40 ? QDate(2024, 1, 1).addDays(i) : QDate(2024, 3, 2).addDays(i - 40);
+                    if (date >= from && date <= till)
+                        rows.append(
+                            QJsonArray{date.toString("yyyy-MM-dd") + " 00:00:00", 100, 101, 99, 100, 10});
+                }
                 const auto body =
                     QJsonDocument(
                         QJsonObject{{"candles", QJsonObject{{"columns", QJsonArray{"begin", "open", "high",
@@ -273,6 +335,19 @@ bool ResearchPanel::history_manager_test() {
     temporary.history_restore_->click();
     if (requests != 1 || temporary.data_.size() != 1 || temporary.selected_bars().size() != 40 ||
         !temporary.history_origins_.value("SBER").contains("RAM"))
+        return false;
+    temporary.history_extend_till_->setDate(QDate(2024, 4, 1));
+    if (!temporary.history_extend_->isEnabled())
+        return false;
+    QEventLoop extension_loop;
+    connect(&temporary.loader_, &MarketHistory::loaded, &extension_loop, &QEventLoop::quit);
+    temporary.history_extend_->click();
+    QTimer::singleShot(5000, &extension_loop, &QEventLoop::quit);
+    extension_loop.exec();
+    if (temporary.loader_.busy() || requests != 2 || temporary.selected_bars().size() != 42 ||
+        !temporary.loader_.current_info().extended || temporary.loader_.current_info().reused_bars != 38 ||
+        temporary.history_sets_->currentData().toString()!=temporary.loader_.current_info().key ||
+        temporary.till_->date() != QDate(2024, 4, 1))
         return false;
     temporary.clear_private_state();
     const bool cleared=temporary.loader_.datasets().isEmpty() && !temporary.loader_.checkpoint().available &&

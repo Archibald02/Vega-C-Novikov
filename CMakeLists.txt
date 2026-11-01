@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(QuantPriceLive VERSION 6.9.0 LANGUAGES CXX)
+project(QuantPriceLive VERSION 6.10.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -22,7 +22,7 @@ if(BUILD_GUI)
   add_library(quote_parser app/quote_parser.cpp)
   target_include_directories(quote_parser PUBLIC app)
   target_link_libraries(quote_parser PUBLIC Qt6::Core)
-  add_library(live_widgets app/research_panel.cpp app/attribution_panel.cpp app/history_manager.cpp app/research_workbench.cpp app/research_experiments.cpp app/research_snapshot.cpp app/learning_panel.cpp app/portfolio_panel.cpp app/portfolio_project.cpp app/portfolio_replay.cpp app/portfolio_live_feed.cpp app/portfolio_account_file.cpp app/portfolio_account_ui.cpp app/research_journey.cpp app/research_panel.hpp app/json_http.cpp app/market_history.cpp app/market_history.hpp app/visual_chart.cpp app/history_panel.cpp
+  add_library(live_widgets app/research_panel.cpp app/attribution_panel.cpp app/history_manager.cpp app/history_extension.cpp app/research_workbench.cpp app/research_experiments.cpp app/research_snapshot.cpp app/learning_panel.cpp app/portfolio_panel.cpp app/portfolio_project.cpp app/portfolio_replay.cpp app/portfolio_live_feed.cpp app/portfolio_account_file.cpp app/portfolio_account_ui.cpp app/research_journey.cpp app/research_panel.hpp app/json_http.cpp app/market_history.cpp app/market_history.hpp app/visual_chart.cpp app/history_panel.cpp
     app/main_window.cpp app/workspace_navigation.cpp app/workspace_tools.cpp app/function_search.cpp app/main_window.hpp
     app/instrument_catalog.cpp app/instrument_catalog.hpp app/catalog_dialog.cpp app/catalog_dialog.hpp app/resource_monitor.cpp
     app/chart_widget.cpp app/chart_widget.hpp app/market_feed.cpp app/market_feed.hpp)
@@ -50,8 +50,10 @@ if(BUILD_TESTING)
   if(BUILD_GUI)
     add_executable(network_tests tests/test_network.cpp tests/test_snapshots.cpp tests/test_portfolio_projects.cpp tests/test_portfolio_feed.cpp tests/test_portfolio_accounts.cpp tests/test_function_search.cpp)
     target_link_libraries(network_tests PRIVATE live_widgets doctest::doctest)
-    add_test(NAME network_failures_and_privacy COMMAND network_tests)
-    set_tests_properties(network_failures_and_privacy PROPERTIES TIMEOUT 30)
+    add_test(NAME network_failures_and_privacy COMMAND network_tests --test-suite-exclude=history_extension,history_extension_limits)
+    add_test(NAME incremental_history_extension COMMAND network_tests --test-suite=history_extension)
+    add_test(NAME incremental_history_limits COMMAND network_tests --test-suite=history_extension_limits)
+    set_tests_properties(network_failures_and_privacy incremental_history_extension incremental_history_limits PROPERTIES TIMEOUT 30)
     # Explicit public API probe, never registered in offline CTest.
     add_executable(portfolio_online_check tests/check_public_portfolio.cpp)
     target_link_libraries(portfolio_online_check PRIVATE live_widgets)

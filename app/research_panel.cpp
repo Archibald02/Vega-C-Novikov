@@ -498,6 +498,8 @@ ResearchPanel::ResearchPanel(QWidget *parent, const QUrl &history_base)
                         {b.time_ms, end, b.open, b.high, b.low, b.close, b.volume, start.offsetFromUtc()});
                 }
                 const auto info = loader_.current_info();
+                if(history_sets_ && history_sets_->findData(info.key)>=0)
+                    history_sets_->setCurrentIndex(history_sets_->findData(info.key));
                 history_origins_[symbol] =
                     QStringLiteral("%1; ред. %2; SHA %3; получено %4%5")
                         .arg(cached ? QStringLiteral("RAM, без перепроверки сети")
@@ -505,6 +507,14 @@ ResearchPanel::ResearchPanel(QWidget *parent, const QUrl &history_base)
                         .arg(info.revision)
                         .arg(info.sha256.left(12), stamp(info.fetched_ms),
                              info.resumed ? QStringLiteral("; возобновлено") : QString());
+                if (info.extended) {
+                    history_origins_[symbol] +=
+                        QStringLiteral("; догрузка, RAM-префикс %1").arg(info.reused_bars);
+                    diagnostics_ << QStringLiteral("Догрузка: сетевые счётчики относятся к хвосту; %1 ранних "
+                                                   "свечей использованы из RAM, перепроверено с %2.")
+                                        .arg(info.reused_bars)
+                                        .arg(info.checked_from.toString(Qt::ISODate));
+                }
                 diagnostics_ << history_origins_[symbol];
                 data_[symbol] = std::move(accepted);
                 diagnostics_ << QStringLiteral(

@@ -424,3 +424,247 @@ TEST_CASE("Cancellation from cached quality callbacks suppresses stale publicati
     h.load_range("SBER",QDate(2020,1,1),QDate(2020,2,1),24);CHECK(loaded==1);CHECK(requests==1);
     h.restore(key);CHECK(loaded==1);CHECK(requests==1);
 }
+namespace {
+QByteArray range_fixture(const QByteArray &request, int total, int changed = -1, int removed = -1) {
+    const QUrlQuery q(QUrl(QString::fromLatin1(request.split(' ').value(1))));
+    const auto from = QDate::fromString(q.queryItemValue("from"), Qt::ISODate),
+               till = QDate::fromString(q.queryItemValue("till"), Qt::ISODate);
+    const QDate origin(2020, 1, 1);
+    const int first = std::max(0, static_cast<int>(origin.daysTo(from)));
+    const int last = std::min(total - 1, static_cast<int>(origin.daysTo(till)));
+    int i = first + q.queryItemValue("start").toInt();
+    if (removed >= first && removed <= i)
+        ++i;
+    QJsonArray rows;
+    for (; i <= last && rows.size() < 500; ++i) {
+        if (i == removed)
+            continue;
+        rows.append(QJsonArray{origin.addDays(i).toString("yyyy-MM-dd") + " 00:00:00", 100, 102, 99,
+                               i == changed ? 101 : 100, 10});
+    }
+    return QJsonDocument(
+               QJsonObject{{"candles", QJsonObject{{"columns", QJsonArray{"begin", "open", "high", "low",
+                                                                          "close", "volume"}},
+                                                   {"data", rows}}}})
+        .toJson();
+}
+} // namespace
+TEST_CASE("History extension checks overlap, preserves prefix and publishes only the merged target" * doctest::test_suite("history_extension")) {
+    LocalServer server;
+    int total = 10;
+    QVector<QString> froms;
+    server.handler = [&](auto *socket, const auto &request) {
+        const QUrlQuery q(QUrl(QString::fromLatin1(request.split(' ').value(1))));
+        froms.push_back(q.queryItemValue("from"));
+        respond(socket, range_fixture(request, total));
+    };
+    live::MarketHistory h(nullptr, server.url());
+    int loaded = 0;
+    QVector<live::Candle> data;
+    QObject::connect(&h, &live::MarketHistory::loaded, &h, [&](const auto &, int, const auto &bars, bool) {
+        ++loaded;
+        data = bars;
+    });
+    h.load_range("SBER", QDate(2020, 1, 1), QDate(2020, 1, 10), 24);
+    REQUIRE(wait_for([&] { return loaded == 1; }));
+    const auto base = h.current_info();
+    total = 15;
+    REQUIRE(h.extend(base.key, QDate(2020, 1, 15)));
+    REQUIRE(wait_for([&] { return loaded == 2; }));
+    const auto result = h.current_info();
+    CHECK(data.size() == 15);
+    CHECK(froms == QVector<QString>{"2020-01-01", "2020-01-09"});
+    CHECK(result.extended);
+    CHECK(result.reused_bars == 8);
+    CHECK(result.checked_from == QDate(2020, 1, 9));
+    CHECK(result.from == base.from);
+    CHECK(result.till == QDate(2020, 1, 15));
+    CHECK(result.base_revision == base.revision);
+    CHECK(result.added == 5);
+    CHECK(result.changed == 0);
+    CHECK(result.removed == 0);
+    CHECK(result.comparable);
+    CHECK(h.datasets().size() == 2);
+    CHECK(h.restore(base.key));
+    CHECK(data.size() == 10);
+}
+TEST_CASE("Changed or deleted overlap causes one complete target reload" * doctest::test_suite("history_extension")) {
+    LocalServer server;
+    int total = 10, changed = -1, removed = -1;
+    QVector<QString> froms;
+    server.handler = [&](auto *socket, const auto &request) {
+        const QUrlQuery q(QUrl(QString::fromLatin1(request.split(' ').value(1))));
+        froms.push_back(q.queryItemValue("from"));
+        respond(socket, range_fixture(request, total, changed, removed));
+    };
+    live::MarketHistory h(nullptr, server.url());
+    int loaded = 0;
+    QVector<live::Candle> data;
+    QObject::connect(&h, &live::MarketHistory::loaded, &h, [&](const auto &, int, const auto &bars, bool) {
+        ++loaded;
+        data = bars;
+    });
+    h.load_range("SBER", QDate(2020, 1, 1), QDate(2020, 1, 10), 24);
+    REQUIRE(wait_for([&] { return loaded == 1; }));
+    const auto key = h.current_info().key;
+    total = 15;
+    SUBCASE("changed OHLCV") { changed = 9; }
+    SUBCASE("missing boundary candle") { removed = 8; }
+    REQUIRE(h.extend(key, QDate(2020, 1, 15)));
+    REQUIRE(wait_for([&] { return loaded == 2; }));
+    CHECK(froms == QVector<QString>{"2020-01-01", "2020-01-09", "2020-01-01"});
+    CHECK_FALSE(h.current_info().extended);
+    CHECK(data.size() == (removed >= 0 ? 14 : 15));
+    if (changed >= 0)
+        CHECK(data[9].close == 101);
+}
+TEST_CASE("Extension checkpoint retains its original dataset when resumed" * doctest::test_suite("history_extension")) {
+    LocalServer server;
+    int total = 10, loaded = 0, changed = -1;
+    bool pause = true;
+    QVector<live::Candle> data;
+    server.handler = [&](auto *socket, const auto &request) {
+        respond(socket, range_fixture(request, total, changed));
+    };
+    live::MarketHistory h(nullptr, server.url());
+    QObject::connect(&h, &live::MarketHistory::loaded, &h, [&](const auto &, int, const auto &bars, bool) {
+        ++loaded;
+        data = bars;
+    });
+    h.load_range("SBER", QDate(2020, 1, 1), QDate(2020, 1, 10), 24);
+    REQUIRE(wait_for([&] { return loaded == 1; }));
+    const auto key = h.current_info().key;
+    total = 620;
+    QObject::connect(&h, &live::MarketHistory::progress, &h, [&](const auto &, int n, int) {
+        if (pause && n == 500) {
+            pause = false;
+            h.cancel();
+        }
+    });
+    REQUIRE(h.extend(key, QDate(2020, 1, 1).addDays(619)));
+    REQUIRE(wait_for([&] { return !h.busy() && h.checkpoint().available; }));
+    CHECK(loaded == 1);
+    CHECK(h.checkpoint().extending);
+    CHECK(h.checkpoint().from == QDate(2020, 1, 1));
+    SUBCASE("same guard") {}
+    SUBCASE("changed guard requires complete reload") { changed = 400; }
+    REQUIRE(h.resume());
+    REQUIRE(wait_for([&] { return loaded == 2; }, 5000));
+    CHECK(data.size() == 620);
+    if (changed < 0) {
+        CHECK(h.current_info().extended);
+        CHECK(h.current_info().resumed);
+        CHECK(h.current_info().reused_bars == 8);
+    } else {
+        CHECK_FALSE(h.current_info().extended);
+        CHECK_FALSE(h.current_info().resumed);
+        CHECK(data[400].close == 101);
+    }
+    CHECK_FALSE(h.checkpoint().available);
+}
+TEST_CASE("Cancelled or failed extension keeps the previous RAM dataset intact" * doctest::test_suite("history_extension")) {
+    LocalServer server;
+    bool failed = false;
+    int total = 10, loaded = 0, errors = 0;
+    server.handler = [&](auto *socket, const auto &request) {
+        if (failed)
+            respond(socket, "{}", 503);
+        else
+            respond(socket, range_fixture(request, total));
+    };
+    live::MarketHistory h(nullptr, server.url());
+    QObject::connect(&h, &live::MarketHistory::loaded, &h, [&] { ++loaded; });
+    QObject::connect(&h, &live::MarketHistory::failed, &h, [&] { ++errors; });
+    h.load_range("SBER", QDate(2020, 1, 1), QDate(2020, 1, 10), 24);
+    REQUIRE(wait_for([&] { return loaded == 1; }));
+    const auto base = h.current_info();
+    SUBCASE("HTTP failure") {
+        failed = true;
+        REQUIRE(h.extend(base.key, QDate(2020, 1, 15)));
+        REQUIRE(wait_for([&] { return errors == 1; }));
+    }
+    SUBCASE("cancel request") {
+        total = 15;
+        REQUIRE(h.extend(base.key, QDate(2020, 1, 15)));
+        h.cancel();
+        events(50);
+    }
+    CHECK(loaded == 1);
+    CHECK(h.datasets().size() == 1);
+    CHECK(h.datasets()[0].sha256 == base.sha256);
+    REQUIRE(h.restore(base.key));
+    CHECK(loaded == 2);
+    h.clear();
+    CHECK(h.datasets().isEmpty());
+    CHECK_FALSE(h.checkpoint().available);
+}
+TEST_CASE("Extension validates date boundaries and H1 identity without silently switching intervals" * doctest::test_suite("history_extension")) {
+    LocalServer server;
+    int total = 10, loaded = 0;
+    server.handler = [&](auto *socket, const auto &request) {
+        respond(socket, range_fixture(request, total));
+    };
+    live::MarketHistory h(nullptr, server.url());
+    QObject::connect(&h, &live::MarketHistory::loaded, &h, [&](const auto &, int preset, const auto &, bool) {
+        CHECK(preset == 2);
+        ++loaded;
+    });
+    h.load_range("SBER", QDate(2020, 1, 1), QDate(2020, 1, 10), 60);
+    REQUIRE(wait_for([&] { return loaded == 1; }));
+    const auto key = h.current_info().key;
+    CHECK_FALSE(h.extend("unknown", QDate(2020, 1, 15)));
+    CHECK_FALSE(h.extend(key, QDate(2020, 1, 9)));
+    CHECK_FALSE(h.extend(key, QDate(2020, 1, 10)));
+    CHECK_FALSE(h.extend(key, QDate()));
+    CHECK_FALSE(h.extend(key, QDate(2050, 1, 1)));
+    total = 11;
+    REQUIRE(h.extend(key, QDate(2020, 1, 11)));
+    REQUIRE(wait_for([&] { return loaded == 2; }));
+    CHECK(h.current_info().interval == 60);
+}
+TEST_CASE("Extension falls back to bounded full load at the combined history limit" * doctest::test_suite("history_extension_limits")) {
+    LocalServer server;
+    int total = 4900, loaded = 0;
+    server.handler = [&](auto *socket, const auto &request) {
+        respond(socket, range_fixture(request, total));
+    };
+    live::MarketHistory h(nullptr, server.url());
+    QObject::connect(&h, &live::MarketHistory::loaded, &h, [&] { ++loaded; });
+    h.load_range("SBER", QDate(2020, 1, 1), QDate(2020, 1, 1).addDays(4899), 24);
+    REQUIRE(wait_for([&] { return loaded == 1; }, 10000));
+    const auto key = h.current_info().key;
+    total = 5100;
+    REQUIRE(h.extend(key, QDate(2020, 1, 1).addDays(5099)));
+    REQUIRE(wait_for([&] { return loaded == 2; }, 10000));
+    CHECK(h.current_info().bars == 5000);
+    CHECK(h.current_info().limited);
+    CHECK_FALSE(h.current_info().extended);
+    const auto before = server.received.size();
+    CHECK_FALSE(h.extend(h.current_info().key, QDate(2020, 1, 1).addDays(5200)));
+    CHECK(server.received.size() == before);
+}
+
+TEST_CASE("Extending into an existing target retains content revision or advances it without rollback" * doctest::test_suite("history_extension")) {
+    LocalServer server;
+    int total = 10, loaded = 0;
+    server.handler = [&](auto *socket, const auto &request) {
+        respond(socket, range_fixture(request, total));
+    };
+    live::MarketHistory h(nullptr, server.url());
+    QObject::connect(&h, &live::MarketHistory::loaded, &h, [&] { ++loaded; });
+    h.load_range("SBER", QDate(2020, 1, 1), QDate(2020, 1, 10), 24);
+    REQUIRE(wait_for([&] { return loaded == 1; }));
+    const auto base = h.current_info();
+    total = 15;
+    h.load_range("SBER", QDate(2020, 1, 1), QDate(2020, 1, 15), 24);
+    REQUIRE(wait_for([&] { return loaded == 2; }));
+    const auto target = h.current_info();
+    REQUIRE(h.extend(base.key, QDate(2020, 1, 15)));
+    REQUIRE(wait_for([&] { return loaded == 3; }));
+    CHECK(h.current_info().revision == target.revision);
+    total = 10;
+    REQUIRE(h.extend(base.key, QDate(2020, 1, 15)));
+    REQUIRE(wait_for([&] { return loaded == 4; }));
+    CHECK(h.current_info().revision > target.revision);
+    CHECK(h.current_info().bars == 10);
+}
