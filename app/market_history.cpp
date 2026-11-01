@@ -180,6 +180,8 @@ void MarketHistory::complete(const QString &symbol, int preset, const QString &k
     info.resumed = request_.resumed;
     info.extended = request_.extended;
     info.checked_from = request_.checked_from;
+    info.checked_till = request_.checked_till;
+    info.prepended = request_.prepended;
     info.base_revision = request_.base_revision;
     info.reused_bars = request_.reused_bars;
     info.sha256 = content_hash(accumulated_);
@@ -373,8 +375,8 @@ HistoryCheckpointInfo MarketHistory::checkpoint() const {
     const auto &c = checkpoint_;
     return {true,
             c.request.symbol,
-            c.extension ? c.extension->base.info.from : c.request.from,
-            c.request.till,
+            c.extension ? c.extension->target_from : c.request.from,
+            c.extension ? c.extension->target_till : c.request.till,
             c.request.interval,
             c.request.preset,
             static_cast<int>(c.bars.size()),

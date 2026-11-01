@@ -193,8 +193,8 @@ class ResearchPanel : public QWidget {
     QComboBox *history_sets_ = nullptr;
     QLabel *history_details_ = nullptr, *history_checkpoint_ = nullptr;
     QPushButton *history_restore_ = nullptr, *history_resume_ = nullptr, *history_refresh_ = nullptr;
-    QPushButton *history_extend_ = nullptr;
-    QDateEdit *history_extend_till_ = nullptr;
+    QPushButton *history_extend_ = nullptr, *history_prepend_ = nullptr;
+    QDateEdit *history_extend_till_ = nullptr, *history_prepend_from_ = nullptr;
     bool force_history_ = false, reuse_history_ = false;
     QMap<QString, QString> history_origins_;
     void calculate();

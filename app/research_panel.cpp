@@ -509,11 +509,14 @@ ResearchPanel::ResearchPanel(QWidget *parent, const QUrl &history_base)
                              info.resumed ? QStringLiteral("; возобновлено") : QString());
                 if (info.extended) {
                     history_origins_[symbol] +=
-                        QStringLiteral("; догрузка, RAM-префикс %1").arg(info.reused_bars);
-                    diagnostics_ << QStringLiteral("Догрузка: сетевые счётчики относятся к хвосту; %1 ранних "
-                                                   "свечей использованы из RAM, перепроверено с %2.")
+                        QStringLiteral("; догрузка %1, RAM %2")
+                            .arg(info.prepended ? QStringLiteral("начала") : QStringLiteral("хвоста"))
+                            .arg(info.reused_bars);
+                    diagnostics_ << QStringLiteral("Догрузка: сетевые счётчики относятся к загруженной части; %1 "
+                                                   "свечей из RAM без перепроверки; сеть %2—%3.")
                                         .arg(info.reused_bars)
-                                        .arg(info.checked_from.toString(Qt::ISODate));
+                                        .arg(info.checked_from.toString(Qt::ISODate),
+                                             info.checked_till.toString(Qt::ISODate));
                 }
                 diagnostics_ << history_origins_[symbol];
                 data_[symbol] = std::move(accepted);

@@ -11,7 +11,8 @@ struct Candle {
     qint64 time_ms = 0;
     double open = 0, high = 0, low = 0, close = 0, volume = 0;
 };
-/** Rejects malformed OHLC, nonfinite numbers, duplicate/reversed dates; max 500 bars. */
+/** Rejects malformed OHLC, nonfinite numbers, duplicate/reversed dates; max 500
+ * bars. */
 QVector<Candle> parse_candles(const QJsonDocument &document);
 struct HistorySetInfo {
     QString key, symbol, sha256;
@@ -20,7 +21,8 @@ struct HistorySetInfo {
     quint64 revision = 0;
     qint64 fetched_ms = 0, started_ms = 0;
     bool comparable = false, limited = false, resumed = false, extended = false;
-    QDate checked_from;
+    QDate checked_from, checked_till;
+    bool prepended = false;
     quint64 base_revision = 0;
     int reused_bars = 0;
 };
@@ -32,15 +34,15 @@ struct HistoryCheckpointInfo {
     qint64 saved_ms = 0;
     bool extending = false;
 };
-/** Only public MOEX candles, user-triggered, paginated requests, 8-entry RAM cache, no token. */
+/** Only public MOEX candles, user-triggered, paginated requests, 8-entry RAM
+ * cache, no token. */
 class MarketHistory : public QObject {
     Q_OBJECT
   public:
-    explicit MarketHistory(
-        QObject *parent = nullptr,
-        const QUrl &public_base =
-            QUrl("https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities/"),
-        std::function<qint64()> clock = {})
+    explicit MarketHistory(QObject *parent = nullptr,
+                           const QUrl &public_base = QUrl("https://iss.moex.com/iss/engines/stock/"
+                                                          "markets/shares/boards/TQBR/securities/"),
+                           std::function<qint64()> clock = {})
         : QObject(parent), public_base_(public_base), clock_(std::move(clock)) {}
     ~MarketHistory() override { cancel(); }
     void load(const QString &symbol, int preset, bool force = false);
@@ -49,10 +51,15 @@ class MarketHistory : public QObject {
     void cancel(bool preserve_checkpoint = true);
     /** Explicit RAM reuse, including expired entries; never performs HTTP. */
     bool restore(const QString &key);
-    /** Revalidates the last successful page before continuing a RAM-only checkpoint. */
+    /** Revalidates the last successful page before continuing a RAM-only
+     * checkpoint. */
     bool resume();
-    /** Extend only the right edge of a complete RAM dataset, verifying an overlapping tail. */
+    /** Extend only the right edge of a complete RAM dataset, verifying an
+     * overlapping tail. */
     bool extend(const QString &key, const QDate &till);
+    /** Extend only the left edge, verifying the earliest overlapping Moscow
+     * calendar days. */
+    bool prepend(const QString &key, const QDate &from);
     void discard_checkpoint();
     QVector<HistorySetInfo> datasets() const;
     HistoryCheckpointInfo checkpoint() const;
@@ -77,9 +84,11 @@ class MarketHistory : public QObject {
     };
     struct Extension {
         Entry base;
-        QDate target_till, checked_from;
+        QDate target_from, target_till, checked_from, checked_till;
+        bool prepended = false;
         QString target_key;
     };
+    bool begin_extension(const QString &key, const QDate &date, bool before);
     void complete_extension();
     void restart_extension(const QString &reason);
     std::shared_ptr<const Extension> extension_;
@@ -92,7 +101,8 @@ class MarketHistory : public QObject {
         int interval = 24, preset = 1;
         qint64 started_ms = 0;
         bool limited = false, resumed = false, extended = false;
-        QDate checked_from;
+        QDate checked_from, checked_till;
+        bool prepended = false;
         quint64 base_revision = 0;
         int reused_bars = 0;
     } request_;
