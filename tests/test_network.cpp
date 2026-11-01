@@ -938,3 +938,214 @@ TEST_CASE("An earlier empty date range expands identity without fabricating cand
     CHECK(h.current_info().prepended);
     CHECK(h.current_info().reused_bars == 8);
 }
+
+TEST_CASE("Interior recheck accepts API additions corrections deletions and unchanged contents" * doctest::test_suite("history_recheck")) {
+    LocalServer server;int loaded=0,changed=-1,removed=-1,mode=0;
+    SUBCASE("added missing interior candle") {mode=1;removed=5;}
+    SUBCASE("changed interior candle") {mode=2;}
+    SUBCASE("deleted interior candle") {mode=3;}
+    SUBCASE("unchanged interior") {}
+    QVector<QString> ranges; QVector<live::Candle> data;
+    server.handler=[&](auto *socket,const auto &request){
+        const QUrlQuery q(QUrl(QString::fromLatin1(request.split(' ').value(1))));
+        ranges.push_back(q.queryItemValue("from")+"/"+q.queryItemValue("till"));
+        respond(socket,range_fixture(request,15,changed,removed));
+    };
+    live::MarketHistory h(nullptr,server.url());
+    QObject::connect(&h,&live::MarketHistory::loaded,&h,[&](const auto&,int,const auto &bars,bool){++loaded;data=bars;});
+    h.load_range("SBER",QDate(2020,1,1),QDate(2020,1,15),24);
+    REQUIRE(wait_for([&]{return loaded==1;}));const auto base=h.current_info();
+    removed=mode==3?5:-1;changed=mode==2?5:-1;
+    REQUIRE(h.recheck(base.key,QDate(2020,1,6),QDate(2020,1,8)));
+    REQUIRE(wait_for([&] { return loaded == 2; }));
+    const auto info = h.current_info();
+    CHECK(ranges == QVector<QString>{"2020-01-01/2020-01-15", "2020-01-05/2020-01-09"});
+    CHECK(info.rechecked);
+    CHECK_FALSE(info.extended);
+    CHECK(info.key == base.key);
+    CHECK(info.from == base.from);
+    CHECK(info.till == base.till);
+    CHECK(info.reused_bars == 10);
+    CHECK(info.added == (mode == 1));
+    CHECK(info.changed == (mode == 2));
+    CHECK(info.removed == (mode == 3));
+    CHECK(info.revision == (mode == 0 ? base.revision : base.revision + 1));
+    CHECK(data.size() == (mode == 3 ? 14 : 15));
+    const auto hash = info.sha256;
+    h.load_range("SBER", base.from, base.till, 24, true);
+    REQUIRE(wait_for([&] { return loaded == 3; }));
+    CHECK(h.current_info().sha256 == hash);
+}
+TEST_CASE("Changed deleted or added anchors trigger exactly one complete interior target reload" *
+          doctest::test_suite("history_recheck")) {
+    LocalServer server;
+    int loaded = 0, changed = -1, removed = -1, mode = 0;
+    QVector<QString> froms;
+    SUBCASE("changed left anchor") { mode = 1; }
+    SUBCASE("deleted right anchor") { mode = 2; }
+    SUBCASE("new row in an anchor day") {
+        mode = 3;
+        removed = 4;
+    }
+    server.handler = [&](auto *socket, const auto &request) {
+        const QUrlQuery q(QUrl(QString::fromLatin1(request.split(' ').value(1))));
+        froms.push_back(q.queryItemValue("from"));
+        respond(socket, range_fixture(request, 15, changed, removed));
+    };
+    live::MarketHistory h(nullptr, server.url());
+    QObject::connect(&h, &live::MarketHistory::loaded, &h, [&] { ++loaded; });
+    h.load_range("SBER", QDate(2020, 1, 1), QDate(2020, 1, 15), 24);
+    REQUIRE(wait_for([&] { return loaded == 1; }));
+    const auto base = h.current_info();
+    changed = mode == 1 ? 4 : -1;
+    removed = mode == 2 ? 8 : -1;
+    REQUIRE(h.recheck(base.key, QDate(2020, 1, 6), QDate(2020, 1, 8)));
+    REQUIRE(wait_for([&] { return loaded == 2; }));
+    CHECK(froms.size() == 3);
+    CHECK(froms.back() == "2020-01-01");
+    CHECK_FALSE(h.current_info().rechecked);
+    CHECK(h.current_info().from == base.from);
+    CHECK(h.current_info().till == base.till);
+}
+TEST_CASE("Interior failure malformed rows cancellation and invalid windows preserve RAM" *
+          doctest::test_suite("history_recheck")) {
+    LocalServer server;
+    int loaded = 0, errors = 0, mode = 0;
+    server.handler = [&](auto *socket, const auto &request) {
+        if (mode == 1) {
+            respond(socket, "{}", 503);
+            return;
+        }
+        auto body = range_fixture(request, 15);
+        if (mode == 2) {
+            auto obj = QJsonDocument::fromJson(body).object();
+            auto block = obj["candles"].toObject();
+            auto rows = block["data"].toArray();
+            rows.append(QJsonArray{"bad", 100, 102, 99, 100, 10});
+            block["data"] = rows;
+            obj["candles"] = block;
+            body = QJsonDocument(obj).toJson();
+        }
+        respond(socket, body);
+    };
+    live::MarketHistory h(nullptr, server.url());
+    QObject::connect(&h, &live::MarketHistory::loaded, &h, [&] { ++loaded; });
+    QObject::connect(&h, &live::MarketHistory::failed, &h, [&] { ++errors; });
+    h.load_range("SBER", QDate(2020, 1, 1), QDate(2020, 1, 15), 24);
+    REQUIRE(wait_for([&] { return loaded == 1; }));
+    const auto base = h.current_info();
+    const auto requests = server.received.size();
+    CHECK_FALSE(h.recheck(base.key, base.from, QDate(2020, 1, 8)));
+    CHECK_FALSE(h.recheck(base.key, QDate(2020, 1, 6), base.till));
+    CHECK_FALSE(h.recheck(base.key, QDate(2020, 1, 8), QDate(2020, 1, 6)));
+    CHECK_FALSE(h.recheck(base.key, QDate(), QDate(2020, 1, 8)));
+    CHECK_FALSE(h.recheck("unknown", QDate(2020, 1, 6), QDate(2020, 1, 8)));
+    CHECK(server.received.size() == requests);
+    errors = 0;
+    SUBCASE("503") {
+        mode = 1;
+        REQUIRE(h.recheck(base.key, QDate(2020, 1, 6), QDate(2020, 1, 8)));
+        REQUIRE(wait_for([&] { return errors == 1; }));
+    }
+    SUBCASE("malformed accepted response") {
+        mode = 2;
+        REQUIRE(h.recheck(base.key, QDate(2020, 1, 6), QDate(2020, 1, 8)));
+        REQUIRE(wait_for([&] { return errors == 1; }));
+    }
+    SUBCASE("cancel") {
+        REQUIRE(h.recheck(base.key, QDate(2020, 1, 6), QDate(2020, 1, 8)));
+        h.cancel();
+        events(40);
+    }
+    SUBCASE("cancel from state message") {
+        QObject::connect(&h, &live::MarketHistory::state_message, &h, [&] { h.cancel(); });
+        CHECK_FALSE(h.recheck(base.key, QDate(2020, 1, 6), QDate(2020, 1, 8)));
+        events(40);
+    }
+    CHECK(loaded == 1);
+    CHECK_FALSE(h.busy());
+    CHECK(h.datasets().size() == 1);
+    CHECK(h.datasets()[0].sha256 == base.sha256);
+    h.clear();
+    CHECK(h.datasets().isEmpty());
+    CHECK_FALSE(h.checkpoint().available);
+}
+TEST_CASE("Interior checkpoint restores full bounds and rejects a changed guard" *
+          doctest::test_suite("history_recheck")) {
+    LocalServer server;
+    int loaded = 0, changed = -1;
+    bool pause = true;
+    server.handler = [&](auto *socket, const auto &request) {
+        respond(socket, range_fixture(request, 1000, changed));
+    };
+    live::MarketHistory h(nullptr, server.url());
+    QObject::connect(&h, &live::MarketHistory::loaded, &h, [&] { ++loaded; });
+    const QDate origin(2020, 1, 1);
+    h.load_range("SBER", origin, origin.addDays(999), 24);
+    REQUIRE(wait_for([&] { return loaded == 1; }));
+    const auto base = h.current_info();
+    QObject::connect(&h, &live::MarketHistory::progress, &h, [&](const auto &, int n, int) {
+        if (pause && n == 500) {
+            pause = false;
+            h.cancel();
+        }
+    });
+    REQUIRE(h.recheck(base.key, origin.addDays(10), origin.addDays(990)));
+    REQUIRE(wait_for([&] { return !h.busy() && h.checkpoint().available; }));
+    CHECK(loaded == 1);
+    CHECK(h.datasets()[0].sha256 == base.sha256);
+    CHECK(h.checkpoint().from == base.from);
+    CHECK(h.checkpoint().till == base.till);
+    SUBCASE("same guard") {}
+    SUBCASE("changed guard") { changed = 400; }
+    REQUIRE(h.resume());
+    REQUIRE(wait_for([&] { return loaded == 2; }, 5000));
+    CHECK(h.current_info().bars == 1000);
+    CHECK(h.current_info().rechecked == (changed < 0));
+    CHECK(h.current_info().from == base.from);
+    CHECK(h.current_info().till == base.till);
+    CHECK_FALSE(h.checkpoint().available);
+}
+TEST_CASE("A window without accepted anchors requires full verification without HTTP" *
+          doctest::test_suite("history_recheck")) {
+    LocalServer server;
+    int loaded = 0;
+    server.handler = [&](auto *socket, const auto &request) { respond(socket, range_fixture(request, 1)); };
+    live::MarketHistory h(nullptr, server.url());
+    QObject::connect(&h, &live::MarketHistory::loaded, &h, [&] { ++loaded; });
+    h.load_range("SBER", QDate(2019, 12, 1), QDate(2020, 2, 1), 24);
+    REQUIRE(wait_for([&] { return loaded == 1; }));
+    CHECK_FALSE(h.recheck(h.current_info().key, QDate(2019, 12, 5), QDate(2019, 12, 10)));
+    CHECK(server.received.size() == 1);
+}
+TEST_CASE("Interior additions above the combined cap fall back to limited full history" * doctest::test_suite("history_recheck_limits")) {
+    LocalServer server;bool expanded=false;int loaded=0;
+    const QDate origin(2020,1,1);
+    QVector<QPair<QDate,QJsonArray>> all;
+    for(int day=0;day<4900;++day) {
+        const auto date=origin.addDays(day);
+        const int hours=day>=210&&day<=220?24:1;
+        for(int hour=0;hour<hours;++hour)
+            all.push_back({date,QJsonArray{date.toString("yyyy-MM-dd")+QString(" %1:00:00").arg(hour,2,10,QChar('0')),100,102,99,100,10}});
+    }
+    server.handler=[&](auto *socket,const auto &request){
+        if(!expanded){respond(socket,range_fixture(request,4900));return;}
+        const QUrlQuery q(QUrl(QString::fromLatin1(request.split(' ').value(1))));
+        const auto from=QDate::fromString(q.queryItemValue("from"),Qt::ISODate),till=QDate::fromString(q.queryItemValue("till"),Qt::ISODate);
+        int skip=q.queryItemValue("start").toInt();QJsonArray rows;
+        for(const auto &r:all) {
+            if(r.first<from||r.first>till)continue;
+            if(skip>0){--skip;continue;}
+            rows.append(r.second);if(rows.size()==500)break;
+        }
+        respond(socket,QJsonDocument(QJsonObject{{"candles",QJsonObject{{"columns",QJsonArray{"begin","open","high","low","close","volume"}},{"data",rows}}}}).toJson());
+    };
+    live::MarketHistory h(nullptr,server.url());QObject::connect(&h,&live::MarketHistory::loaded,&h,[&]{++loaded;});
+    h.load_range("SBER",origin,origin.addDays(4899),60);REQUIRE(wait_for([&]{return loaded==1;},10000));
+    const auto base=h.current_info();expanded=true;
+    REQUIRE(h.recheck(base.key,origin.addDays(210),origin.addDays(220)));
+    REQUIRE(wait_for([&]{return loaded==2;},10000));
+    CHECK(h.current_info().bars==5000);CHECK(h.current_info().limited);CHECK_FALSE(h.current_info().rechecked);
+    CHECK(h.current_info().from==base.from);CHECK(h.current_info().till==base.till);
+    CHECK_FALSE(h.recheck(base.key,origin.addDays(210),origin.addDays(220)));
+}

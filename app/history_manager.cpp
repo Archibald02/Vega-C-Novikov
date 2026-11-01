@@ -144,6 +144,26 @@ void ResearchPanel::setup_history_manager() {
                                  "объединения запускает полную загрузку расширенного периода. "
                                  "Внутренние пропуски этим не заполняются; для глубокой проверки "
                                  "используйте полную перепроверку.")));
+    auto *repair_form = new QFormLayout;
+    history_recheck_from_ = new QDateEdit(QDate(2024, 1, 1));
+    history_recheck_till_ = new QDateEdit(QDate(2024, 1, 1));
+    for (auto *date : {history_recheck_from_, history_recheck_till_}) {
+        date->setCalendarPopup(true);
+        date->setDisplayFormat("dd.MM.yyyy");
+        date->setDateRange(QDate(1990, 1, 1), history_extend_till_->date());
+    }
+    history_recheck_from_->setAccessibleName(QStringLiteral("Начало перепроверяемого участка"));
+    history_recheck_till_->setAccessibleName(QStringLiteral("Конец перепроверяемого участка"));
+    repair_form->addRow(QStringLiteral("Участок с даты"), history_recheck_from_);
+    repair_form->addRow(QStringLiteral("По дату включительно"), history_recheck_till_);
+    layout->addLayout(repair_form);
+    history_recheck_ = new QPushButton(QStringLiteral("Перепроверить участок внутри набора"));
+    layout->addWidget(history_recheck_);
+    layout->addWidget(paragraph(QStringLiteral(
+        "Укажите даты строго внутри полного набора. В участке принимаются добавления, исправления и "
+        "удаления свечей из ISS. С обеих сторон проверяются ближайшие опорные дни. Если они изменились, "
+        "загружается весь период. Свечи вне сетевого диапазона берутся из RAM без перепроверки. "
+        "Выходные не считаются ошибкой автоматически; отсутствующие свечи не выдумываются.")));
     history_checkpoint_ = paragraph({});
     layout->addWidget(history_checkpoint_);
     history_resume_ = new QPushButton(QStringLiteral("Продолжить незавершённый набор"));
@@ -227,6 +247,23 @@ void ResearchPanel::setup_history_manager() {
                 return;
             }
     });
+    for (auto *date : {history_recheck_from_, history_recheck_till_})
+        connect(date, &QDateEdit::dateChanged, this, [this] { refresh_history_manager(); });
+    connect(history_recheck_, &QPushButton::clicked, this, [this] {
+        const auto key = history_sets_->currentData().toString();
+        const auto from = history_recheck_from_->date(), till = history_recheck_till_->date();
+        for (const auto &info : loader_.datasets())
+            if (info.key == key) {
+                prepare_history_set(info.symbol, info.from, info.till, info.interval);
+                if (!loader_.recheck(key, from, till) && loading_) {
+                    loading_ = false;
+                    load_->setEnabled(true);
+                    period_->setEnabled(true);
+                }
+                refresh_history_manager();
+                return;
+            }
+    });
     connect(history_resume_, &QPushButton::clicked, this, [this] {
         const auto c = loader_.checkpoint();
         if (!c.available) {
@@ -276,10 +313,11 @@ void ResearchPanel::refresh_history_manager() {
         history_details_->setText(
             QStringLiteral("Собрано %1 → %2. SHA-256 %3\n%4. %5%6")
                 .arg(time_text(info.started_ms), time_text(info.fetched_ms), info.sha256,
-                     info.comparable ? (info.extended ? QStringLiteral("К выбранной базе: +%1 / изменено "
-                                                                       "%2 / удалено %3")
-                                                      : QStringLiteral("К предыдущему набору: +%1 / "
-                                                                       "изменено %2 / удалено %3"))
+                     info.comparable ? ((info.extended || info.rechecked)
+                                            ? QStringLiteral("К выбранной базе: +%1 / изменено "
+                                                             "%2 / удалено %3")
+                                            : QStringLiteral("К предыдущему набору: +%1 / "
+                                                             "изменено %2 / удалено %3"))
                                            .arg(info.added)
                                            .arg(info.changed)
                                            .arg(info.removed)
@@ -290,16 +328,25 @@ void ResearchPanel::refresh_history_manager() {
                      info.limited ? QStringLiteral("Лимит 5000: период может быть неполным.") : QString()));
     } else
         history_details_->setText(QStringLiteral("Готовых наборов в RAM нет."));
-    if (selected >= 0 && sets[selected].extended)
+    if (selected >= 0 && (sets[selected].extended || sets[selected].rechecked))
         history_details_->setText(
             history_details_->text() +
-            QStringLiteral("\nДогрузка %1 от ред. %2: %3 свечей из RAM без "
+            QStringLiteral("\nПроверка %1 от ред. %2: %3 свечей из RAM без "
                            "перепроверки; сеть %4—%5.")
-                .arg(sets[selected].prepended ? QStringLiteral("начала") : QStringLiteral("хвоста"))
+                .arg(sets[selected].rechecked
+                         ? QStringLiteral("участка")
+                         : (sets[selected].prepended ? QStringLiteral("начала") : QStringLiteral("хвоста")))
                 .arg(sets[selected].base_revision)
                 .arg(sets[selected].reused_bars)
                 .arg(sets[selected].checked_from.toString(Qt::ISODate),
                      sets[selected].checked_till.toString(Qt::ISODate)));
+    if (selected >= 0 && history_recheck_from_->property("baseKey").toString() != sets[selected].key) {
+        const QSignalBlocker a(history_recheck_from_), b(history_recheck_till_);
+        history_recheck_from_->setProperty("baseKey", sets[selected].key);
+        const auto middle = sets[selected].from.addDays(sets[selected].from.daysTo(sets[selected].till) / 2);
+        history_recheck_from_->setDate(middle);
+        history_recheck_till_->setDate(middle);
+    }
     const QSignalBlocker date_blocker(history_extend_till_);
     history_extend_till_->setMaximumDate(
         QDateTime::currentDateTimeUtc().toTimeZone(QTimeZone("Europe/Moscow")).date());
@@ -316,11 +363,15 @@ void ResearchPanel::refresh_history_manager() {
     if (c.available && c.extending)
         history_checkpoint_->setText(
             history_checkpoint_->text() +
-            QStringLiteral(" Догрузка: счётчик относится только к загружаемой части."));
+            QStringLiteral(" Частичная загрузка: счётчик относится только к сетевой части."));
     const bool idle = !loading_ && !loader_.busy() && (!worker_ || !worker_->isRunning());
     history_restore_->setEnabled(idle && selected >= 0);
     history_refresh_->setEnabled(idle && selected >= 0);
     history_resume_->setEnabled(idle && c.available);
+    history_recheck_->setEnabled(idle && selected >= 0 && !sets[selected].limited &&
+                                 history_recheck_from_->date() > sets[selected].from &&
+                                 history_recheck_till_->date() < sets[selected].till &&
+                                 history_recheck_from_->date() <= history_recheck_till_->date());
     history_prepend_->setEnabled(idle && selected >= 0 && !sets[selected].limited &&
                                  history_prepend_from_->date() < sets[selected].from &&
                                  history_prepend_from_->date().daysTo(sets[selected].till) <= 7305);
@@ -333,6 +384,7 @@ bool ResearchPanel::history_manager_test() {
     if (!server.listen(QHostAddress::LocalHost))
         return false;
     int requests = 0;
+    bool corrected = false;
     connect(&server, &QTcpServer::newConnection, &server, [&] {
         while (auto *socket = server.nextPendingConnection()) {
             auto bytes = std::make_shared<QByteArray>();
@@ -353,8 +405,8 @@ bool ResearchPanel::history_manager_test() {
                     const auto date =
                         i < 40 ? QDate(2024, 1, 1).addDays(i) : QDate(2024, 3, 2).addDays(i - 40);
                     if (date >= from && date <= till)
-                        rows.append(
-                            QJsonArray{date.toString("yyyy-MM-dd") + " 00:00:00", 100, 101, 99, 100, 10});
+                        rows.append(QJsonArray{date.toString("yyyy-MM-dd") + " 00:00:00", 100, 101, 99,
+                                               corrected && date == QDate(2024, 1, 11) ? 101 : 100, 10});
                 }
                 const auto body =
                     QJsonDocument(
@@ -411,6 +463,22 @@ bool ResearchPanel::history_manager_test() {
         temporary.history_sets_->currentData().toString() != earlier.key ||
         temporary.from_->date() != QDate(2023, 12, 1) || temporary.till_->date() != QDate(2024, 4, 1) ||
         !temporary.history_origins_.value("SBER").contains(QStringLiteral("начала")))
+        return false;
+    temporary.history_recheck_from_->setDate(QDate(2024, 1, 10));
+    temporary.history_recheck_till_->setDate(QDate(2024, 1, 12));
+    if (!temporary.history_recheck_->isEnabled())
+        return false;
+    corrected = true;
+    QEventLoop recheck_loop;
+    connect(&temporary.loader_, &MarketHistory::loaded, &recheck_loop, &QEventLoop::quit);
+    temporary.history_recheck_->click();
+    QTimer::singleShot(5000, &recheck_loop, &QEventLoop::quit);
+    recheck_loop.exec();
+    const auto repaired = temporary.loader_.current_info();
+    if (temporary.loader_.busy() || requests != 4 || temporary.selected_bars().size() != 44 ||
+        !repaired.rechecked || repaired.changed != 1 || repaired.reused_bars != 39 ||
+        temporary.from_->date() != QDate(2023, 12, 1) || temporary.till_->date() != QDate(2024, 4, 1) ||
+        !temporary.history_origins_.value("SBER").contains(QStringLiteral("участка")))
         return false;
     temporary.clear_private_state();
     const bool cleared = temporary.loader_.datasets().isEmpty() &&

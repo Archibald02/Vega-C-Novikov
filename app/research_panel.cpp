@@ -507,12 +507,13 @@ ResearchPanel::ResearchPanel(QWidget *parent, const QUrl &history_base)
                         .arg(info.revision)
                         .arg(info.sha256.left(12), stamp(info.fetched_ms),
                              info.resumed ? QStringLiteral("; возобновлено") : QString());
-                if (info.extended) {
+                if (info.extended || info.rechecked) {
                     history_origins_[symbol] +=
-                        QStringLiteral("; догрузка %1, RAM %2")
-                            .arg(info.prepended ? QStringLiteral("начала") : QStringLiteral("хвоста"))
+                        QStringLiteral("; проверка %1, RAM %2")
+                            .arg(info.rechecked ? QStringLiteral("участка") :
+                                 (info.prepended ? QStringLiteral("начала") : QStringLiteral("хвоста")))
                             .arg(info.reused_bars);
-                    diagnostics_ << QStringLiteral("Догрузка: сетевые счётчики относятся к загруженной части; %1 "
+                    diagnostics_ << QStringLiteral("Частичная проверка: сетевые счётчики относятся к загруженной части; %1 "
                                                    "свечей из RAM без перепроверки; сеть %2—%3.")
                                         .arg(info.reused_bars)
                                         .arg(info.checked_from.toString(Qt::ISODate),

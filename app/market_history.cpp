@@ -182,6 +182,7 @@ void MarketHistory::complete(const QString &symbol, int preset, const QString &k
     info.checked_from = request_.checked_from;
     info.checked_till = request_.checked_till;
     info.prepended = request_.prepended;
+    info.rechecked = request_.rechecked;
     info.base_revision = request_.base_revision;
     info.reused_bars = request_.reused_bars;
     info.sha256 = content_hash(accumulated_);

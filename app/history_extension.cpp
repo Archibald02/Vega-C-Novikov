@@ -48,7 +48,7 @@ bool MarketHistory::begin_extension(const QString &key, const QDate &date, bool 
     if (!active_)
         return false;
     extension_ = std::make_shared<const Extension>(
-        Extension{base, target_from, target_till, checked_from, checked_till, before, target_key});
+        Extension{base, target_from, target_till, checked_from, checked_till, before, false, target_key});
     const bool reused =
         before ? date_of(base.bars.back()) > checked_till : date_of(base.bars.front()) < checked_from;
     if (reused)
@@ -61,12 +61,41 @@ bool MarketHistory::begin_extension(const QString &key, const QDate &date, bool 
         return false;
     return true;
 }
+bool MarketHistory::recheck(const QString &key, const QDate &from, const QDate &till) {
+    if (active_)
+        return false;
+    const auto found = cache_.constFind(key);
+    if (found == cache_.cend() || found->info.limited || !from.isValid() || !till.isValid() || from > till ||
+        from <= found->info.from || till >= found->info.till) {
+        emit failed(QStringLiteral("Выберите полный RAM-набор и участок строго внутри его периода."));
+        return false;
+    }
+    const auto base = *found;
+    const auto first = first_on_or_after(base.bars, from), last = first_after(base.bars, till);
+    if (first == base.bars.cbegin() || last == base.bars.cend()) {
+        emit failed(QStringLiteral("Для проверки участка нужны принятые свечи до и после него. "
+                                   "Используйте полную перепроверку периода."));
+        return false;
+    }
+    const auto checked_from = date_of(*(first - 1)), checked_till = date_of(*last);
+    load_range(base.info.symbol, checked_from, checked_till, base.info.interval, true, base.info.preset);
+    if (!active_)
+        return false;
+    extension_ = std::make_shared<const Extension>(Extension{
+        base, base.info.from, base.info.till, checked_from, checked_till, false, true, key, from, till});
+    if (date_of(base.bars.front()) < checked_from || date_of(base.bars.back()) > checked_till)
+        request_.started_ms = std::min(request_.started_ms, base.info.started_ms);
+    const auto generation = generation_;
+    emit state_message(QStringLiteral("Перепроверяется участок %1—%2 с опорными свечами по обе стороны.")
+                           .arg(from.toString(Qt::ISODate), till.toString(Qt::ISODate)));
+    return generation == generation_ && active_;
+}
 void MarketHistory::restart_extension(const QString &reason) {
     if (!extension_)
         return;
     const auto extension = extension_;
     const auto generation = generation_;
-    emit state_message(reason + QStringLiteral(" Весь расширенный период загружается заново."));
+    emit state_message(reason + QStringLiteral(" Весь целевой период загружается заново."));
     if (generation != generation_ || !active_)
         return;
     checkpoint_ = {};
@@ -83,11 +112,28 @@ void MarketHistory::complete_extension() {
     const auto last = first_after(base.bars, extension->checked_till);
     const auto fresh_first = first_on_or_after(accumulated_, base.info.from);
     const auto fresh_last = first_after(accumulated_, base.info.till);
-    if (!std::equal(first, last, fresh_first, fresh_last, identical)) {
+    if (extension->rechecked && rejected_ > 0) {
+        fail(QStringLiteral("Ответ участка содержит отклонённые строки. Прежний RAM-набор сохранён; "
+                            "исправления не применены."),
+             false);
+        return;
+    }
+    bool overlap_matches = false;
+    if (extension->rechecked) {
+        overlap_matches =
+            std::equal(first, first_on_or_after(base.bars, extension->replace_from), fresh_first,
+                       first_on_or_after(accumulated_, extension->replace_from), identical) &&
+            std::equal(first_after(base.bars, extension->replace_till), last,
+                       first_after(accumulated_, extension->replace_till), fresh_last, identical);
+    } else
+        overlap_matches = std::equal(first, last, fresh_first, fresh_last, identical);
+    if (!overlap_matches) {
         restart_extension(QStringLiteral("Пересечение с RAM-набором изменилось или неполно."));
         return;
     }
-    const auto reused = extension->prepended ? base.bars.cend() - last : first - base.bars.cbegin();
+    const auto reused = extension->rechecked
+                            ? (first - base.bars.cbegin()) + (base.bars.cend() - last)
+                            : (extension->prepended ? base.bars.cend() - last : first - base.bars.cbegin());
     if (request_.limited || reused + accumulated_.size() > 5000) {
         restart_extension(QStringLiteral("Объединённый набор превышает предел догрузки."));
         return;
@@ -99,7 +145,7 @@ void MarketHistory::complete_extension() {
             merged.push_back(*i);
     for (const auto &b : accumulated_)
         merged.push_back(b);
-    if (extension->prepended)
+    if (extension->prepended || extension->rechecked)
         for (auto i = last; i != base.bars.cend(); ++i)
             merged.push_back(*i);
     accumulated_ = std::move(merged);
@@ -108,7 +154,8 @@ void MarketHistory::complete_extension() {
     request_.key = extension->target_key;
     request_.from = extension->target_from;
     request_.till = extension->target_till;
-    request_.extended = true;
+    request_.extended = !extension->rechecked;
+    request_.rechecked = extension->rechecked;
     request_.prepended = extension->prepended;
     request_.checked_from = extension->checked_from;
     request_.checked_till = extension->checked_till;

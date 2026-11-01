@@ -22,7 +22,7 @@ struct HistorySetInfo {
     qint64 fetched_ms = 0, started_ms = 0;
     bool comparable = false, limited = false, resumed = false, extended = false;
     QDate checked_from, checked_till;
-    bool prepended = false;
+    bool prepended = false, rechecked = false;
     quint64 base_revision = 0;
     int reused_bars = 0;
 };
@@ -60,6 +60,8 @@ class MarketHistory : public QObject {
     /** Extend only the left edge, verifying the earliest overlapping Moscow
      * calendar days. */
     bool prepend(const QString &key, const QDate &from);
+    /** Re-fetch an interior date window, verifying unchanged anchors on both sides. */
+    bool recheck(const QString &key, const QDate &from, const QDate &till);
     void discard_checkpoint();
     QVector<HistorySetInfo> datasets() const;
     HistoryCheckpointInfo checkpoint() const;
@@ -85,8 +87,9 @@ class MarketHistory : public QObject {
     struct Extension {
         Entry base;
         QDate target_from, target_till, checked_from, checked_till;
-        bool prepended = false;
+        bool prepended = false, rechecked = false;
         QString target_key;
+        QDate replace_from, replace_till;
     };
     bool begin_extension(const QString &key, const QDate &date, bool before);
     void complete_extension();
@@ -102,7 +105,7 @@ class MarketHistory : public QObject {
         qint64 started_ms = 0;
         bool limited = false, resumed = false, extended = false;
         QDate checked_from, checked_till;
-        bool prepended = false;
+        bool prepended = false, rechecked = false;
         quint64 base_revision = 0;
         int reused_bars = 0;
     } request_;
