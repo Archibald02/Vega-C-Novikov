@@ -22,7 +22,7 @@ struct HistorySetInfo {
     qint64 fetched_ms = 0, started_ms = 0;
     bool comparable = false, limited = false, resumed = false, extended = false;
     QDate checked_from, checked_till;
-    bool prepended = false, rechecked = false;
+    bool prepended = false, rechecked = false, archived = false;
     quint64 base_revision = 0;
     int reused_bars = 0;
 };
@@ -64,6 +64,14 @@ class MarketHistory : public QObject {
     bool recheck(const QString &key, const QDate &from, const QDate &till);
     void discard_checkpoint();
     QVector<HistorySetInfo> datasets() const;
+    /** Superseded RAM contents: newest first, at most two per key and eight globally. */
+    QVector<HistorySetInfo> archived_datasets(const QString &key) const;
+    /** Open an archived revision without HTTP or replacing the current cache entry. */
+    bool restore_revision(const QString &key, quint64 revision);
+    /** Remove only the stored archive entry; already displayed study results remain. */
+    bool remove_revision(const QString &key, quint64 revision);
+    /** Remove all archived entries, leaving current cache entries and displayed results. */
+    void clear_archive();
     HistoryCheckpointInfo checkpoint() const;
     HistorySetInfo current_info() const { return current_info_; }
     void clear();
@@ -128,6 +136,8 @@ class MarketHistory : public QObject {
     QNetworkAccessManager network_;
     QPointer<QNetworkReply> reply_;
     QMap<QString, Entry> cache_;
+    QVector<Entry> archive_;
+    void archive_entry(const Entry &entry);
     quint64 generation_ = 0;
     qint64 resume_ms_ = 0;
     QUrl public_base_;

@@ -188,8 +188,13 @@ class ResearchPanel : public QWidget {
     void begin_history_load(bool force = false);
     void setup_history_manager();
     void refresh_history_manager();
+    void refresh_history_archive();
     void prepare_history_set(const QString &symbol, QDate from, QDate till, int interval);
     bool history_manager_test();
+    QComboBox *history_archives_ = nullptr;
+    QLabel *history_archive_details_ = nullptr;
+    QPushButton *history_archive_restore_ = nullptr, *history_archive_remove_ = nullptr;
+    QPushButton *history_archive_clear_ = nullptr;
     QComboBox *history_sets_ = nullptr;
     QLabel *history_details_ = nullptr, *history_checkpoint_ = nullptr;
     QPushButton *history_restore_ = nullptr, *history_resume_ = nullptr, *history_refresh_ = nullptr;

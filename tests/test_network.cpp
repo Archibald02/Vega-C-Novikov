@@ -1149,3 +1149,216 @@ TEST_CASE("Interior additions above the combined cap fall back to limited full h
     CHECK(h.current_info().from==base.from);CHECK(h.current_info().till==base.till);
     CHECK_FALSE(h.recheck(base.key,origin.addDays(210),origin.addDays(220)));
 }
+
+TEST_CASE("Archived history restores exact former contents without replacing the latest cache" * doctest::test_suite("history_archive")) {
+    LocalServer server;int changed=-1,loaded=0;QVector<live::Candle> data;
+    server.handler=[&](auto *socket,const auto &request){respond(socket,range_fixture(request,15,changed));};
+    live::MarketHistory h(nullptr,server.url());
+    QObject::connect(&h,&live::MarketHistory::loaded,&h,[&](const auto&,int,const auto &bars,bool){++loaded;data=bars;});
+    const QDate from(2020,1,1),till(2020,1,15);
+    h.load_range("SBER",from,till,24);REQUIRE(wait_for([&]{return loaded==1;}));const auto original=h.current_info();
+    changed=5;h.load_range("SBER",from,till,24,true);REQUIRE(wait_for([&]{return loaded==2;}));const auto latest=h.current_info();
+    auto archive=h.archived_datasets(original.key);REQUIRE(archive.size()==1);
+    CHECK(archive[0].archived);CHECK(archive[0].sha256==original.sha256);CHECK(archive[0].fetched_ms==original.fetched_ms);
+    CHECK(archive[0].revision==original.revision);CHECK(archive[0].bars==15);
+    const auto requests=server.received.size();
+    REQUIRE(h.restore_revision(original.key,original.revision));CHECK(loaded==3);CHECK(data[5].close==100);
+    CHECK(h.current_info().archived);CHECK(h.current_info().sha256==original.sha256);
+    CHECK(h.datasets()[0].sha256==latest.sha256);CHECK(server.received.size()==requests);
+    h.load_range("SBER",from,till,24);CHECK(loaded==4);CHECK_FALSE(h.current_info().archived);CHECK(data[5].close==101);
+    CHECK(server.received.size()==requests);
+    h.load_range("SBER",from,till,24,true);REQUIRE(wait_for([&]{return loaded==5;}));
+    CHECK(h.current_info().revision==latest.revision);CHECK(h.archived_datasets(original.key).size()==1);
+    REQUIRE(h.remove_revision(original.key,original.revision));CHECK_FALSE(h.remove_revision(original.key,original.revision));
+    CHECK_FALSE(h.restore_revision(original.key,original.revision));CHECK(h.datasets().size()==1);
+}
+TEST_CASE("Archive per-key and global budgets evict oldest distinct superseded contents" * doctest::test_suite("history_archive")) {
+    LocalServer server;int loaded=0,changed=-1;
+    server.handler=[&](auto *socket,const auto &request){respond(socket,range_fixture(request,4,changed));};
+    live::MarketHistory h(nullptr,server.url());QObject::connect(&h,&live::MarketHistory::loaded,&h,[&]{++loaded;});
+    const QDate from(2020,1,1),till(2020,1,4);QVector<QString> keys;
+    for (const QString &symbol : QStringList{"SBER", "GAZP", "LKOH", "VTBR", "MGNT"}) {
+        changed = -1;
+        h.load_range(symbol, from, till, 24, true);
+        int target = loaded + 1;
+        REQUIRE(wait_for([&] { return loaded == target; }));
+        const auto key = h.current_info().key;
+        keys.push_back(key);
+        for (int c = 0; c < 3; ++c) {
+            changed = c;
+            target = loaded + 1;
+            h.load_range(symbol, from, till, 24, true);
+            REQUIRE(wait_for([&] { return loaded == target; }));
+            CHECK(h.archived_datasets(key).size() <= 2);
+        }
+        int total = 0;
+        for (const auto &k : keys)
+            total += h.archived_datasets(k).size();
+        CHECK(total <= 8);
+    }
+    CHECK(h.archived_datasets(keys.front()).isEmpty());
+    int total = 0;
+    for (const auto &k : keys)
+        total += h.archived_datasets(k).size();
+    CHECK(total == 8);
+    h.clear_archive();
+    for (const auto &k : keys)
+        CHECK(h.archived_datasets(k).isEmpty());
+    CHECK(h.datasets().size() == 5);
+}
+TEST_CASE("Repeated former content retains only its latest superseded provenance" *
+          doctest::test_suite("history_archive")) {
+    LocalServer server;
+    int changed = -1, loaded = 0;
+    server.handler = [&](auto *socket, const auto &request) {
+        respond(socket, range_fixture(request, 3, changed));
+    };
+    live::MarketHistory h(nullptr, server.url());
+    QObject::connect(&h, &live::MarketHistory::loaded, &h, [&] { ++loaded; });
+    QVector<live::HistorySetInfo> versions;
+    for (int c : {-1, 0, -1, 1}) {
+        changed = c;
+        int target = loaded + 1;
+        h.load_range("SBER", QDate(2020, 1, 1), QDate(2020, 1, 3), 24, true);
+        REQUIRE(wait_for([&] { return loaded == target; }));
+        versions.push_back(h.current_info());
+    }
+    const auto archive = h.archived_datasets(versions[0].key);
+    REQUIRE(archive.size() == 2);
+    CHECK(archive[0].revision == versions[2].revision);
+    CHECK(archive[0].sha256 == versions[0].sha256);
+    CHECK(archive[1].revision == versions[1].revision);
+    CHECK_FALSE(h.restore_revision(versions[0].key, versions[0].revision));
+}
+TEST_CASE("Failed or cancelled refresh does not create an archived partial version" *
+          doctest::test_suite("history_archive")) {
+    LocalServer server;
+    int loaded = 0, errors = 0;
+    bool fail = false;
+    server.handler = [&](auto *socket, const auto &request) {
+        if (fail)
+            respond(socket, "{}", 503);
+        else
+            respond(socket, range_fixture(request, 3));
+    };
+    live::MarketHistory h(nullptr, server.url());
+    QObject::connect(&h, &live::MarketHistory::loaded, &h, [&] { ++loaded; });
+    QObject::connect(&h, &live::MarketHistory::failed, &h, [&] { ++errors; });
+    h.load_range("SBER", QDate(2020, 1, 1), QDate(2020, 1, 3), 24);
+    REQUIRE(wait_for([&] { return loaded == 1; }));
+    const auto base = h.current_info();
+    SUBCASE("error") {
+        fail = true;
+        h.load_range("SBER", base.from, base.till, 24, true);
+        REQUIRE(wait_for([&] { return errors == 1; }));
+    }
+    SUBCASE("cancel") {
+        h.load_range("SBER", base.from, base.till, 24, true);
+        h.cancel();
+        events(40);
+    }
+    CHECK(h.archived_datasets(base.key).isEmpty());
+    CHECK(h.datasets()[0].sha256 == base.sha256);
+    CHECK(loaded == 1);
+}
+TEST_CASE("Archive publication respects reentrant cancellation and private-state clearing" *
+          doctest::test_suite("history_archive")) {
+    LocalServer server;
+    int changed = -1, loaded = 0;
+    server.handler = [&](auto *socket, const auto &request) {
+        respond(socket, range_fixture(request, 3, changed));
+    };
+    live::MarketHistory h(nullptr, server.url());
+    QObject::connect(&h, &live::MarketHistory::loaded, &h, [&] { ++loaded; });
+    h.load_range("SBER", QDate(2020, 1, 1), QDate(2020, 1, 3), 24);
+    REQUIRE(wait_for([&] { return loaded == 1; }));
+    const auto base = h.current_info();
+    changed = 1;
+    h.load_range("SBER", base.from, base.till, 24, true);
+    REQUIRE(wait_for([&] { return loaded == 2; }));
+    CHECK_FALSE(h.restore_revision("unknown", base.revision));
+    CHECK_FALSE(h.restore_revision(base.key, 99999));
+    SUBCASE("cancel on state") {
+        QObject::connect(&h, &live::MarketHistory::state_message, &h, [&] { h.cancel(); });
+        CHECK_FALSE(h.restore_revision(base.key, base.revision));
+    }
+    SUBCASE("clear on quality") {
+        QObject::connect(&h, &live::MarketHistory::quality_report, &h, [&] { h.clear(); });
+        CHECK_FALSE(h.restore_revision(base.key, base.revision));
+        CHECK(h.datasets().isEmpty());
+        CHECK(h.archived_datasets(base.key).isEmpty());
+    }
+    SUBCASE("busy archive cannot be opened or individually deleted") {
+        h.load_range("GAZP", base.from, base.till, 24, true);
+        CHECK_FALSE(h.restore_revision(base.key, base.revision));
+        CHECK_FALSE(h.remove_revision(base.key, base.revision));
+        h.clear();
+        events(40);
+        CHECK(h.datasets().isEmpty());
+        CHECK(h.archived_datasets(base.key).isEmpty());
+    }
+    CHECK(loaded == 2);
+}
+TEST_CASE("Evicting a parent dataset also releases its archive" * doctest::test_suite("history_archive")) {
+    LocalServer server;
+    int changed = -1, loaded = 0;
+    server.handler = [&](auto *socket, const auto &request) {
+        respond(socket, range_fixture(request, 3, changed));
+    };
+    qint64 clock = 1000;
+    live::MarketHistory h(nullptr, server.url(), [&] { return clock; });
+    QObject::connect(&h, &live::MarketHistory::loaded, &h, [&] { ++loaded; });
+    const QDate from(2020, 1, 1), till(2020, 1, 3);
+    h.load_range("SBER", from, till, 24);
+    REQUIRE(wait_for([&] { return loaded == 1; }));
+    const auto key = h.current_info().key;
+    changed = 1;
+    h.load_range("SBER", from, till, 24, true);
+    REQUIRE(wait_for([&] { return loaded == 2; }));
+    REQUIRE(h.archived_datasets(key).size() == 1);
+    for (const QString &symbol :
+         QStringList{"GAZP", "LKOH", "VTBR", "MGNT", "MOEX", "ROSN", "NVTK", "AFLT"}) {
+        ++clock;
+        int target = loaded + 1;
+        h.load_range(symbol, from, till, 24, true);
+        REQUIRE(wait_for([&] { return loaded == target; }));
+    }
+    CHECK(h.datasets().size() == 8);
+    CHECK(h.archived_datasets(key).isEmpty());
+}
+TEST_CASE("Archived 5000-candle contents preserve truncation and remain bounded" *
+          doctest::test_suite("history_archive_limits")) {
+    LocalServer server;
+    int loaded = 0, changed = -1;
+    QVector<live::Candle> data;
+    server.handler = [&](auto *socket, const auto &request) {
+        respond(socket, range_fixture(request, 5100, changed));
+    };
+    live::MarketHistory h(nullptr, server.url());
+    QObject::connect(&h, &live::MarketHistory::loaded, &h, [&](const auto &, int, const auto &bars, bool) {
+        ++loaded;
+        data = bars;
+    });
+    const QDate from(2020, 1, 1), till = from.addDays(5099);
+    h.load_range("SBER", from, till, 24);
+    REQUIRE(wait_for([&] { return loaded == 1; }, 10000));
+    const auto base = h.current_info();
+    changed = 4999;
+    h.load_range("SBER", from, till, 24, true);
+    REQUIRE(wait_for([&] { return loaded == 2; }, 10000));
+    const auto archive = h.archived_datasets(base.key);
+    REQUIRE(archive.size() == 1);
+    CHECK(archive[0].bars == 5000);
+    CHECK(archive[0].limited);
+    const auto requests = server.received.size();
+    REQUIRE(h.restore_revision(base.key, base.revision));
+    CHECK(data.size() == 5000);
+    CHECK(data.back().close == 100);
+    CHECK(h.current_info().limited);
+    CHECK(h.current_info().sha256 == base.sha256);
+    CHECK(server.received.size() == requests);
+    h.clear();
+    CHECK(h.datasets().isEmpty());
+    CHECK(h.archived_datasets(base.key).isEmpty());
+    CHECK_FALSE(h.restore_revision(base.key, base.revision));
+}

@@ -502,8 +502,9 @@ ResearchPanel::ResearchPanel(QWidget *parent, const QUrl &history_base)
                     history_sets_->setCurrentIndex(history_sets_->findData(info.key));
                 history_origins_[symbol] =
                     QStringLiteral("%1; ред. %2; SHA %3; получено %4%5")
-                        .arg(cached ? QStringLiteral("RAM, без перепроверки сети")
-                                    : QStringLiteral("MOEX ISS"))
+                        .arg(info.archived ? QStringLiteral("АРХИВ RAM, прежняя редакция, сеть не перепроверялась")
+                                           : (cached ? QStringLiteral("RAM, без перепроверки сети")
+                                                     : QStringLiteral("MOEX ISS")))
                         .arg(info.revision)
                         .arg(info.sha256.left(12), stamp(info.fetched_ms),
                              info.resumed ? QStringLiteral("; возобновлено") : QString());
@@ -1877,9 +1878,10 @@ void ResearchPanel::set_test_view(int index) {
     if(index==9) {
         tabs_->setCurrentIndex(6);
         if(auto *button=findChild<QToolButton*>("historyManagerToggle"))button->setChecked(true);
+        if(auto *button=findChild<QToolButton*>("historyArchiveToggle"))button->setChecked(true);
         if(auto *scroll=qobject_cast<QScrollArea*>(tabs_->widget(6))) {
             scroll->widget()->layout()->activate();
-            scroll->verticalScrollBar()->setValue(scroll->verticalScrollBar()->maximum());
+            scroll->ensureWidgetVisible(history_archive_restore_, 0, 80);
         }
         return;
     }

@@ -108,6 +108,7 @@ void MarketHistory::cancel(bool preserve_checkpoint) {
 void MarketHistory::clear() {
     cancel(false);
     cache_.clear();
+    archive_.clear();
     current_info_ = {};
     emit history_changed();
 }
@@ -216,12 +217,18 @@ void MarketHistory::complete(const QString &symbol, int preset, const QString &k
     info.revision = (revision_base && info.sha256 == revision_base->info.sha256)
                         ? revision_base->info.revision
                         : ++revision_;
+    if (found != cache_.cend() && found->info.sha256 != info.sha256)
+        archive_entry(found.value());
     if (cache_.size() >= 8 && !cache_.contains(key)) {
         auto oldest = cache_.begin();
         for (auto it = cache_.begin(); it != cache_.end(); ++it)
             if (it->fetched_ms < oldest->fetched_ms)
                 oldest = it;
+        const auto evicted_key = oldest.key();
         cache_.erase(oldest);
+        for (qsizetype i = archive_.size(); i-- > 0;)
+            if (archive_[i].info.key == evicted_key)
+                archive_.removeAt(i);
     }
     cache_[key] = {accumulated_, info.fetched_ms, received_, rejected_, info};
     current_info_ = info;

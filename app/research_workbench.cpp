@@ -104,7 +104,7 @@ bool write_report(const QString &html, const QString &path, bool pdf) {
         QPdfWriter writer(&file);
         writer.setResolution(120);
         writer.setPageSize(QPageSize(QPageSize::A4));
-        writer.setTitle("Quant Price Live 6.12.0");
+        writer.setTitle("Quant Price Live 6.13.0");
         QTextDocument doc;
         doc.setHtml(html);
         doc.print(&writer);
@@ -335,7 +335,7 @@ QWidget *ResearchPanel::workbench_page() {
     auto *release = new QPushButton(QStringLiteral("Версия и проверка обновлений"));
     l->addWidget(release);
     release_status_ =
-        note(QStringLiteral("Quant Price Live 6.12.0 • C++17 / Qt %1 • %2 • "
+        note(QStringLiteral("Quant Price Live 6.13.0 • C++17 / Qt %1 • %2 • "
                             "%3\nWindows 10/11 x64; если отсутствует "
                             "MSVCP140.dll/VCRUNTIME140.dll — установите "
                             "официальный Microsoft Visual C++ "
@@ -354,14 +354,14 @@ QWidget *ResearchPanel::workbench_page() {
                 release_reply_.clear();
                 if (!r.ok()) {
                     release_status_->setText(
-                        QStringLiteral("Версия приложения 6.12.0. Публичного релиза нет или API "
+                        QStringLiteral("Версия приложения 6.13.0. Публичного релиза нет или API "
                                        "недоступен. Проверенные "
                                        "сборки находятся в GitHub Actions; обновление "
                                        "устанавливается вручную."));
                     return;
                 }
                 const auto tag = r.document.object().value("tag_name").toString().left(80);
-                release_status_->setText(QStringLiteral("Установлена 6.12.0; последний "
+                release_status_->setText(QStringLiteral("Установлена 6.13.0; последний "
                                                         "опубликованный релиз: %1. Сравните версию "
                                                         "на GitHub перед ручной установкой. "
                                                         "Автоматической замены файлов нет.")
@@ -785,7 +785,7 @@ bool ResearchPanel::save_project(const QString &path, bool include_account) {
     parameters.insert("values", values);
     QJsonObject project{{"format", "QuantPriceLive"},
                         {"schema", 1},
-                        {"app_version", "6.12.0"},
+                        {"app_version", "6.13.0"},
                         {"parameters", parameters},
                         {"attempts", attempts_}};
     QJsonArray seen;
@@ -1383,7 +1383,7 @@ QString ResearchPanel::report_html(bool compact) const {
                                   "#b7c5d2;padding:5px;text-align:left}pre{"
                                   "white-space:pre-wrap;word-break:break-all}"
                                   "img{max-width:100%}</style><h1>Quant Price "
-                                  "Live 6.12.0 — учебное исследование</h1>");
+                                  "Live 6.13.0 — учебное исследование</h1>");
     html += "<p>" + r.source.toHtmlEscaped() + " • отчёт UTC " +
             QDateTime::currentDateTimeUtc().toString(Qt::ISODate) + "</p>";
     const auto formula_text = [](const quant::RuleGroup &group) {
