@@ -54,7 +54,10 @@ struct LabResult {
 /** Standalone bounded research workspace. All broker interactions remain read-only. */
 class ResearchPanel : public QWidget {
   public:
-    explicit ResearchPanel(QWidget *parent = nullptr);
+    explicit ResearchPanel(
+        QWidget *parent = nullptr,
+        const QUrl &history_base =
+            QUrl("https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities/"));
     ~ResearchPanel() override;
     void set_symbol(const QString &symbol);
     void set_feed_quality(const QString &text);
@@ -182,6 +185,16 @@ class ResearchPanel : public QWidget {
     quant::RuleGroup ui_rules(const std::vector<RuleUi> &controls, bool all, bool custom) const;
     quant::SimConfig settings() const;
     void load_next();
+    void begin_history_load(bool force = false);
+    void setup_history_manager();
+    void refresh_history_manager();
+    void prepare_history_set(const QString &symbol, QDate from, QDate till, int interval);
+    bool history_manager_test();
+    QComboBox *history_sets_ = nullptr;
+    QLabel *history_details_ = nullptr, *history_checkpoint_ = nullptr;
+    QPushButton *history_restore_ = nullptr, *history_resume_ = nullptr, *history_refresh_ = nullptr;
+    bool force_history_ = false, reuse_history_ = false;
+    QMap<QString, QString> history_origins_;
     void calculate();
     void present(const LabResult &result);
     void show_distribution();

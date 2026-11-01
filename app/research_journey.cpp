@@ -56,6 +56,9 @@ void ResearchPanel::update_journey() {
                                            source_dirty_
                                                ? QStringLiteral(" • ИЗМЕНЕНЫ ДАТЫ/ТИКЕРЫ: загрузите заново")
                                                : QString()));
+        if (!synthetic_ && !local_project_ && !history_origins_.value(selected_->currentText()).isEmpty())
+            dataset_context_->setText(dataset_context_->text() + "\n" +
+                                      history_origins_.value(selected_->currentText()));
     }
     if (last_result_.simulation.equity.empty()) {
         result_context_->setText(

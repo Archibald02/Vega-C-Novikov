@@ -178,3 +178,249 @@ TEST_CASE("Seeded malformed input stress does not produce invalid quotes") {
     const auto q=live::parse_alor(R"({"data":{"symbol":"SBER","last_price":100,"last_price_timestamp":1000,"bid":-1,"ask":0}})");REQUIRE(q);CHECK(std::isnan(q->bid));CHECK(std::isnan(q->ask));
 }
 int main(int argc,char** argv) {QCoreApplication app(argc,argv);doctest::Context context;context.applyCommandLine(argc,argv);return context.run();}
+namespace {
+QByteArray history_page(int start, int count, double close = 100) {
+    QJsonArray rows;
+    for (int i = start; i < start + count; ++i)
+        rows.append(QJsonArray{QDate(2020, 1, 1).addDays(i).toString("yyyy-MM-dd") + " 00:00:00", 100, 102,
+                               99, close, 10});
+    return QJsonDocument(
+               QJsonObject{{"candles", QJsonObject{{"columns", QJsonArray{"begin", "open", "high", "low",
+                                                                          "close", "volume"}},
+                                                   {"data", rows}}}})
+        .toJson();
+}
+int page_start(const QByteArray &request) {
+    return QUrlQuery(QUrl(QString::fromLatin1(request.split(' ').value(1)))).queryItemValue("start").toInt();
+}
+} // namespace
+TEST_CASE("Interrupted history resumes after verifying the last page without publishing partial bars") {
+    LocalServer server;
+    QVector<int> starts;
+    server.handler = [&](auto *socket, const auto &request) {
+        const int start = page_start(request);
+        starts.push_back(start);
+        respond(socket, history_page(start, start == 0 ? 500 : 1));
+    };
+    live::MarketHistory h(nullptr, server.url());
+    int loaded = 0, count = 0, received = 0;
+    bool pause = true;
+    QObject::connect(&h, &live::MarketHistory::progress, &h, [&](const auto &, int n, int) {
+        if (pause && n == 500) {
+            pause = false;
+            h.cancel();
+        }
+    });
+    QObject::connect(&h, &live::MarketHistory::loaded, &h, [&](const auto &, int, const auto &bars, bool) {
+        ++loaded;
+        count = bars.size();
+    });
+    QObject::connect(&h, &live::MarketHistory::quality_report, &h,
+                     [&](const auto &, int n, int) { received = n; });
+    h.load_range("SBER", QDate(2020, 1, 1), QDate(2025, 1, 1), 24);
+    REQUIRE(wait_for([&] { return h.checkpoint().available && !h.busy(); }));
+    CHECK(loaded == 0);
+    CHECK(h.checkpoint().bars == 500);
+    CHECK(h.checkpoint().next_offset == 500);
+    REQUIRE(h.resume());
+    REQUIRE(wait_for([&] { return loaded == 1; }, 5000));
+    CHECK(starts == QVector<int>{0, 0, 500});
+    CHECK(count == 501);
+    CHECK(received == 501);
+    CHECK(h.current_info().resumed);
+    CHECK_FALSE(h.checkpoint().available);
+}
+TEST_CASE("Changed resume boundary restarts the complete period instead of stitching incompatible pages") {
+    LocalServer server;
+    bool changed = false, pause = true;
+    QVector<int> starts;
+    server.handler = [&](auto *socket, const auto &request) {
+        const int start = page_start(request);
+        starts.push_back(start);
+        respond(socket, history_page(start, start == 0 ? 500 : 1, changed ? 101 : 100));
+    };
+    live::MarketHistory h(nullptr, server.url());
+    int loaded = 0;
+    QVector<live::Candle> result;
+    QObject::connect(&h, &live::MarketHistory::progress, &h, [&](const auto &, int n, int) {
+        if (pause && n == 500) {
+            pause = false;
+            h.cancel();
+        }
+    });
+    QObject::connect(&h, &live::MarketHistory::loaded, &h, [&](const auto &, int, const auto &bars, bool) {
+        ++loaded;
+        result = bars;
+    });
+    h.load_range("SBER", QDate(2020, 1, 1), QDate(2025, 1, 1), 24);
+    REQUIRE(wait_for([&] { return h.checkpoint().available && !h.busy(); }));
+    changed = true;
+    REQUIRE(h.resume());
+    REQUIRE(wait_for([&] { return loaded == 1; }, 5000));
+    CHECK(starts == QVector<int>{0, 0, 0, 500});
+    REQUIRE(result.size() == 501);
+    for (const auto &b : result)
+        CHECK(b.close == 101);
+    CHECK_FALSE(h.current_info().resumed);
+}
+TEST_CASE("History checkpoints expire, clear privately and honor source backoff") {
+    LocalServer server;
+    qint64 clock = 100000;
+    bool pause = true;
+    bool limited = false;
+    int requests = 0;
+    server.handler = [&](auto *socket, const auto &request) {
+        ++requests;
+        if (limited)
+            respond(socket, "{}", 429, "Retry-After: 120\r\n");
+        else
+            respond(socket, history_page(page_start(request), 500));
+    };
+    live::MarketHistory h(nullptr, server.url(), [&] { return clock; });
+    int errors = 0;
+    QObject::connect(&h, &live::MarketHistory::failed, &h, [&] { ++errors; });
+    QObject::connect(&h, &live::MarketHistory::progress, &h, [&](const auto &, int n, int) {
+        if (pause && n == 500) {
+            pause = false;
+            h.cancel();
+        }
+    });
+    h.load_range("SBER", QDate(2020, 1, 1), QDate(2025, 1, 1), 24);
+    REQUIRE(wait_for([&] { return h.checkpoint().available && !h.busy(); }));
+    SUBCASE("expired") {
+        clock += 1800001;
+        CHECK_FALSE(h.checkpoint().available);
+        CHECK_FALSE(h.resume());
+        CHECK(requests == 1);
+    }
+    SUBCASE("429 on verification retains checkpoint but prevents immediate requests") {
+        limited = true;
+        REQUIRE(h.resume());
+        REQUIRE(wait_for([&] { return errors == 1; }));
+        CHECK(h.checkpoint().available);
+        CHECK_FALSE(h.resume());
+        CHECK(requests == 2);
+        CHECK(errors == 2);
+    }
+    SUBCASE("explicit discard") {
+        h.discard_checkpoint();
+        CHECK_FALSE(h.resume());
+        CHECK(requests == 1);
+    }
+    h.clear();
+    CHECK(h.datasets().isEmpty());
+    CHECK_FALSE(h.checkpoint().available);
+    CHECK(h.current_info().sha256.isEmpty());
+}
+TEST_CASE("History RAM catalog revisions compare content and explicit reuse never accesses network") {
+    LocalServer server;
+    int mode = 0, requests = 0;
+    server.handler = [&](auto *socket, const auto &) {
+        ++requests;
+        auto object = QJsonDocument::fromJson(history_page(0, 2)).object();
+        if (mode == 1) {
+            auto block = object["candles"].toObject();
+            auto rows = block["data"].toArray();
+            auto first = rows[0].toArray();
+            first[4] = 101;
+            rows[0] = first;
+            rows.removeLast();
+            rows.append(QJsonArray{"2020-01-03 00:00:00", 100, 102, 99, 100, 10});
+            block["data"] = rows;
+            object["candles"] = block;
+        }
+        respond(socket, QJsonDocument(object).toJson());
+    };
+    qint64 clock = 100000;
+    live::MarketHistory h(nullptr, server.url(), [&] { return clock; });
+    int loaded = 0;
+    QObject::connect(&h, &live::MarketHistory::loaded, &h, [&] { ++loaded; });
+    auto load = [&] {
+        h.load_range("SBER", QDate(2020, 1, 1), QDate(2020, 2, 1), 24, true);
+        REQUIRE(wait_for([&] { return !h.busy(); }));
+    };
+    load();
+    const auto first = h.current_info();
+    CHECK(first.sha256.size() == 64);
+    CHECK_FALSE(first.comparable);
+    ++clock;
+    load();
+    CHECK(h.current_info().revision == first.revision);
+    CHECK(h.current_info().sha256 == first.sha256);
+    mode = 1;
+    ++clock;
+    load();
+    const auto revised = h.current_info();
+    CHECK(revised.revision > first.revision);
+    CHECK(revised.added == 1);
+    CHECK(revised.changed == 1);
+    CHECK(revised.removed == 1);
+    CHECK(revised.comparable);
+    clock += 600000;
+    const int before = requests;
+    CHECK(h.restore(revised.key));
+    CHECK(requests == before);
+    CHECK(loaded == 4);
+    CHECK(h.current_info().fetched_ms == revised.fetched_ms);
+    CHECK_FALSE(h.restore("unknown"));
+    for (int i = 0; i < 9; ++i) {
+        ++clock;
+        h.load_range(QString("A%1").arg(i), QDate(2020, 1, 1), QDate(2020, 2, 1), 24, true);
+        REQUIRE(wait_for([&] { return !h.busy(); }));
+    }
+    CHECK(h.datasets().size() == 8);
+    CHECK_FALSE(h.restore(revised.key));
+}
+TEST_CASE("Cancelled resume and malformed pages cannot publish stale or partial history") {
+    LocalServer server;
+    bool pause = true;
+    int phase = 0, loaded = 0, errors = 0;
+    server.handler = [&](auto *socket, const auto &request) {
+        if (phase == 1)
+            respond(socket, R"({"candles":{"columns":[],"data":[]}})");
+        else
+            respond(socket, history_page(page_start(request), 500));
+    };
+    live::MarketHistory h(nullptr, server.url());
+    QObject::connect(&h, &live::MarketHistory::loaded, &h, [&] { ++loaded; });
+    QObject::connect(&h, &live::MarketHistory::failed, &h, [&] { ++errors; });
+    QObject::connect(&h, &live::MarketHistory::progress, &h, [&](const auto &, int n, int) {
+        if (pause && n == 500) {
+            pause = false;
+            h.cancel();
+        }
+    });
+    h.load_range("SBER", QDate(2020, 1, 1), QDate(2025, 1, 1), 24);
+    REQUIRE(wait_for([&] { return h.checkpoint().available && !h.busy(); }));
+    SUBCASE("bad schema") {
+        phase = 1;
+        REQUIRE(h.resume());
+        REQUIRE(wait_for([&] { return errors == 1; }));
+        CHECK_FALSE(h.checkpoint().available);
+    }
+    SUBCASE("cancel from state message") {
+        QObject::connect(&h, &live::MarketHistory::state_message, &h, [&] { h.cancel(); });
+        CHECK_FALSE(h.resume());
+        events(20);
+    }
+    SUBCASE("clear during resumed request") {
+        REQUIRE(h.resume());
+        h.clear();
+        events(40);
+        CHECK(h.datasets().isEmpty());
+        CHECK_FALSE(h.checkpoint().available);
+    }
+    CHECK(loaded == 0);
+    CHECK_FALSE(h.busy());
+}
+
+TEST_CASE("Cancellation from cached quality callbacks suppresses stale publication") {
+    LocalServer server;int requests=0;server.handler=[&](auto *socket,const auto&){++requests;respond(socket,history_page(0,2));};
+    live::MarketHistory h(nullptr,server.url());int loaded=0;
+    QObject::connect(&h,&live::MarketHistory::loaded,&h,[&]{++loaded;});
+    h.load_range("SBER",QDate(2020,1,1),QDate(2020,2,1),24);REQUIRE(wait_for([&]{return loaded==1;}));
+    const auto key=h.current_info().key;
+    QObject::connect(&h,&live::MarketHistory::quality_report,&h,[&]{h.cancel();});
+    h.load_range("SBER",QDate(2020,1,1),QDate(2020,2,1),24);CHECK(loaded==1);CHECK(requests==1);
+    h.restore(key);CHECK(loaded==1);CHECK(requests==1);
+}

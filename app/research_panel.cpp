@@ -11,6 +11,8 @@
 #include <QJsonDocument>
 #include <QMap>
 #include <QScrollArea>
+#include <QScrollBar>
+#include <QToolButton>
 #include <QShortcut>
 #include <QSignalBlocker>
 #include <QSplitter>
@@ -239,7 +241,8 @@ QString execution_gate(const std::string &gate) {
     return gates.value(QString::fromStdString(gate), QString::fromStdString(gate));
 }
 QString execution_reason(const std::string &code) { return reason(code); }
-ResearchPanel::ResearchPanel(QWidget *parent) : QWidget(parent) {
+ResearchPanel::ResearchPanel(QWidget *parent, const QUrl &history_base)
+    : QWidget(parent), loader_(nullptr, history_base) {
     auto *layout = new QVBoxLayout(this);
     layout->setSizeConstraint(QLayout::SetNoConstraint);
     layout->setContentsMargins(8, 8, 8, 8);
@@ -403,6 +406,7 @@ ResearchPanel::ResearchPanel(QWidget *parent) : QWidget(parent) {
         tabs_->insertTab(i, scroll, title);
     }
     setup_workbench();
+    setup_history_manager();
     heading->insertWidget(1, expert_);
     data_layout_->addStretch();
     auto *footer = new QHBoxLayout;
@@ -430,6 +434,7 @@ ResearchPanel::ResearchPanel(QWidget *parent) : QWidget(parent) {
     worker_ = new QFutureWatcher<LabResult>(this);
     connect(worker_, &QFutureWatcher<LabResult>::finished, this, [this] {
         calculate_->setEnabled(true);
+        refresh_history_manager();
         update_journey();
         if (cancel_ && cancel_->load())
             return;
@@ -452,29 +457,7 @@ ResearchPanel::ResearchPanel(QWidget *parent) : QWidget(parent) {
                              ? QStringLiteral("ДЕМО • расчёт завершён, все цены синтетические")
                              : QStringLiteral("MOEX ISS • расчёт закрытых задержанных свечей завершён"));
     });
-    connect(load_, &QPushButton::clicked, this, [this] {
-        cancel_work();
-        data_.clear();
-        result_current_ = false;
-        diagnostics_.clear();
-        selected_->clear();
-        try {
-            requested_ = parse_symbols(symbols_->text());
-            if (requested_.size() > 6)
-                throw std::invalid_argument("Six");
-        } catch (...) {
-            status_->setText(QStringLiteral("Введите от 1 до 6 тикеров."));
-            return;
-        }
-        synthetic_ = false;
-        local_project_ = false;
-        loading_ = true;
-        load_->setEnabled(false);
-        period_->setEnabled(false);
-        request_index_ = 0;
-        update_journey();
-        load_next();
-    });
+    connect(load_, &QPushButton::clicked, this, [this] { begin_history_load(); });
     connect(cancel, &QPushButton::clicked, this, [this] {
         cancel_work();
         status_->setText(
@@ -493,7 +476,7 @@ ResearchPanel::ResearchPanel(QWidget *parent) : QWidget(parent) {
         }
     });
     connect(&loader_, &MarketHistory::loaded, this,
-            [this](const QString &symbol, int preset, const QVector<Candle> &bars, bool) {
+            [this](const QString &symbol, int preset, const QVector<Candle> &bars, bool cached) {
                 if (!loading_ || request_index_ >= requested_.size() || symbol != requested_[request_index_])
                     return;
                 std::vector<quant::Bar> accepted;
@@ -514,6 +497,15 @@ ResearchPanel::ResearchPanel(QWidget *parent) : QWidget(parent) {
                     accepted.push_back(
                         {b.time_ms, end, b.open, b.high, b.low, b.close, b.volume, start.offsetFromUtc()});
                 }
+                const auto info = loader_.current_info();
+                history_origins_[symbol] =
+                    QStringLiteral("%1; ред. %2; SHA %3; получено %4%5")
+                        .arg(cached ? QStringLiteral("RAM, без перепроверки сети")
+                                    : QStringLiteral("MOEX ISS"))
+                        .arg(info.revision)
+                        .arg(info.sha256.left(12), stamp(info.fetched_ms),
+                             info.resumed ? QStringLiteral("; возобновлено") : QString());
+                diagnostics_ << history_origins_[symbol];
                 data_[symbol] = std::move(accepted);
                 diagnostics_ << QStringLiteral(
                                     "%1: принято %2, незавершённых исключено %3, календарных разрывов %4")
@@ -556,7 +548,7 @@ ResearchPanel::ResearchPanel(QWidget *parent) : QWidget(parent) {
         if (w != expert_ && w != save_cash_ && w != save_account_)
             connect(w, &QCheckBox::toggled, this, dirty);
     for (auto *w : findChildren<QComboBox *>())
-        if (w != selected_ && w != period_ && w != distribution_mode_)
+        if (w != selected_ && w != period_ && w != distribution_mode_ && w != history_sets_)
             connect(w, &QComboBox::currentIndexChanged, this, dirty);
     auto source_changed = [this, dirty] {
         source_dirty_ = !data_.empty();
@@ -572,6 +564,7 @@ ResearchPanel::ResearchPanel(QWidget *parent) : QWidget(parent) {
         if (!loading_) {
             cancel_work();
             data_.clear();
+            history_origins_.clear();
             selected_->clear();
             status_->setText(QStringLiteral("Период изменён. Загрузите историю заново."));
         }
@@ -614,6 +607,8 @@ void ResearchPanel::cancel_work() {
         cancel_->store(true);
     loader_.cancel();
     loading_ = false;
+    if (history_sets_)
+        refresh_history_manager();
     load_->setEnabled(true);
     period_->setEnabled(true);
     paper_timer_.stop();
@@ -633,6 +628,7 @@ void ResearchPanel::cancel_work() {
 }
 void ResearchPanel::clear_private_state() {
     cancel_work();
+    history_origins_.clear();
     data_.clear();
     runs_.clear();
     if (experiment_detail_)
@@ -710,9 +706,9 @@ void ResearchPanel::load_next() {
                              .arg(requested_.size()));
         if (custom_dates_->isChecked())
             loader_.load_range(requested_[request_index_], from_->date(), till_->date(),
-                               period_->currentIndex() == 2 ? 60 : 24);
+                               period_->currentIndex() == 2 ? 60 : 24, force_history_);
         else
-            loader_.load(requested_[request_index_], period_->currentIndex());
+            loader_.load(requested_[request_index_], period_->currentIndex(), force_history_);
         return;
     }
     loading_ = false;
@@ -725,11 +721,14 @@ void ResearchPanel::load_next() {
     if (selected_->count() > 0)
         selected_->setCurrentIndex(0);
     quality_->setText(diagnostics_.join('\n'));
-    catalog_.load();
+    if (!reuse_history_)
+        catalog_.load();
+    force_history_ = reuse_history_ = false;
+    refresh_history_manager();
     preflight();
     update_journey();
-    status_->setText(QStringLiteral(
-        "История загружена. Выберите инструмент и нажмите расчёт. Незавершённые свечи исключены."));
+    status_->setText(QStringLiteral("История готова. Выберите инструмент и нажмите расчёт. Незавершённые "
+                                    "свечи исключены; происхождение и возраст — в качестве данных."));
 }
 QWidget *ResearchPanel::analytics_page() {
     auto *page = new QWidget;
@@ -1319,10 +1318,13 @@ void ResearchPanel::calculate() {
     parameters.insert("data_end_utc", QString::number(bars.back().end));
     parameters.insert("bar_count", static_cast<int>(bars.size()));
     const auto hash = fingerprint(bars);
+    const auto origin =
+        (!synthetic_ && !local_project_) ? history_origins_.value(selected_->currentText()) : QString();
     const auto source = selected_->currentText() + " • " +
                         (local_project_ ? QStringLiteral("ЛОКАЛЬНЫЙ ПРОЕКТ, источник не перепроверен")
                          : synthetic_   ? QStringLiteral("СИНТЕТИЧЕСКОЕ ДЕМО")
-                                        : QStringLiteral("MOEX ISS, задержанные данные"));
+                                        : QStringLiteral("MOEX ISS, задержанные данные")) +
+                        (origin.isEmpty() ? QString() : QStringLiteral(" • ") + origin);
     attempts_ = std::min(1000000, attempts_ + 1);
     cancel_ = std::make_shared<std::atomic<bool>>(false);
     auto cancelled = cancel_;
@@ -1392,6 +1394,7 @@ void ResearchPanel::calculate() {
         return r;
     }));
     update_journey();
+    refresh_history_manager();
 }
 void ResearchPanel::explain_bar(int index) {
     const auto &r = last_result_;
@@ -1706,6 +1709,7 @@ void ResearchPanel::present(const LabResult &r) {
     update_journey();
 }
 void ResearchPanel::demo(bool hourly) {
+    history_origins_.clear();
     data_.clear();
     selected_->clear();
     diagnostics_.clear();
@@ -1855,7 +1859,18 @@ void ResearchPanel::update_paper() {
         QStringLiteral("Та же модель исполнения, что в бэктесте. Никаких запросов к торговому API."));
     journal_rows(journal_, r);
 }
-void ResearchPanel::set_test_view(int index) { tabs_->setCurrentIndex(std::clamp(index, 0, 8)); }
+void ResearchPanel::set_test_view(int index) {
+    if(index==9) {
+        tabs_->setCurrentIndex(6);
+        if(auto *button=findChild<QToolButton*>("historyManagerToggle"))button->setChecked(true);
+        if(auto *scroll=qobject_cast<QScrollArea*>(tabs_->widget(6))) {
+            scroll->widget()->layout()->activate();
+            scroll->verticalScrollBar()->setValue(scroll->verticalScrollBar()->maximum());
+        }
+        return;
+    }
+    tabs_->setCurrentIndex(std::clamp(index,0,8));
+}
 void ResearchPanel::navigate_to(int index, bool advanced) {
     if (advanced)
         expert_->setChecked(true);
@@ -2024,7 +2039,7 @@ bool ResearchPanel::self_test() {
         QStringLiteral("ДЕМО лаборатории • проверки расчёта, отмены и виртуального счёта завершены"));
     return r.correlation.common_returns == 359 && r.walk.folds.size() > 0 && paper_ &&
            paper_->result().halted && features_table_->rowCount() == 100 && higher_test() &&
-           bootstrap_test() && attribution_test();
+           bootstrap_test() && attribution_test() && history_manager_test();
 }
 bool ResearchPanel::higher_test() {
     demo(true);

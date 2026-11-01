@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(QuantPriceLive VERSION 6.8.0 LANGUAGES CXX)
+project(QuantPriceLive VERSION 6.9.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -22,7 +22,7 @@ if(BUILD_GUI)
   add_library(quote_parser app/quote_parser.cpp)
   target_include_directories(quote_parser PUBLIC app)
   target_link_libraries(quote_parser PUBLIC Qt6::Core)
-  add_library(live_widgets app/research_panel.cpp app/attribution_panel.cpp app/research_workbench.cpp app/research_experiments.cpp app/research_snapshot.cpp app/learning_panel.cpp app/portfolio_panel.cpp app/portfolio_project.cpp app/portfolio_replay.cpp app/portfolio_live_feed.cpp app/portfolio_account_file.cpp app/portfolio_account_ui.cpp app/research_journey.cpp app/research_panel.hpp app/json_http.cpp app/market_history.cpp app/market_history.hpp app/visual_chart.cpp app/history_panel.cpp
+  add_library(live_widgets app/research_panel.cpp app/attribution_panel.cpp app/history_manager.cpp app/research_workbench.cpp app/research_experiments.cpp app/research_snapshot.cpp app/learning_panel.cpp app/portfolio_panel.cpp app/portfolio_project.cpp app/portfolio_replay.cpp app/portfolio_live_feed.cpp app/portfolio_account_file.cpp app/portfolio_account_ui.cpp app/research_journey.cpp app/research_panel.hpp app/json_http.cpp app/market_history.cpp app/market_history.hpp app/visual_chart.cpp app/history_panel.cpp
     app/main_window.cpp app/workspace_navigation.cpp app/workspace_tools.cpp app/function_search.cpp app/main_window.hpp
     app/instrument_catalog.cpp app/instrument_catalog.hpp app/catalog_dialog.cpp app/catalog_dialog.hpp app/resource_monitor.cpp
     app/chart_widget.cpp app/chart_widget.hpp app/market_feed.cpp app/market_feed.hpp)
