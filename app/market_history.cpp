@@ -1,4 +1,5 @@
 #include "market_history.hpp"
+#include "history_disk_cache.hpp"
 #include "quote_parser.hpp"
 #include <QCryptographicHash>
 #include <QJsonArray>
@@ -19,14 +20,6 @@ bool same(const Candle &a, const Candle &b) {
     return a.time_ms == b.time_ms && a.open == b.open && a.high == b.high && a.low == b.low &&
            a.close == b.close && a.volume == b.volume;
 }
-QString content_hash(const QVector<Candle> &bars) {
-    QJsonArray rows;
-    for (const auto &b : bars)
-        rows.append(QJsonArray{QString::number(b.time_ms), b.open, b.high, b.low, b.close, b.volume});
-    return QString::fromLatin1(QCryptographicHash::hash(QJsonDocument(rows).toJson(QJsonDocument::Compact),
-                                                        QCryptographicHash::Sha256)
-                                   .toHex());
-}
 bool valid_block(const QJsonObject &block) {
     if (!block.value("data").isArray() || !block.value("columns").isArray() ||
         block.value("data").toArray().size() > 500)
@@ -43,6 +36,14 @@ bool valid_block(const QJsonObject &block) {
     return true;
 }
 } // namespace
+QString history_content_hash(const QVector<Candle> &bars) {
+    QJsonArray rows;
+    for (const auto &b : bars)
+        rows.append(QJsonArray{QString::number(b.time_ms), b.open, b.high, b.low, b.close, b.volume});
+    return QString::fromLatin1(QCryptographicHash::hash(QJsonDocument(rows).toJson(QJsonDocument::Compact),
+                                                        QCryptographicHash::Sha256)
+                                   .toHex());
+}
 QVector<Candle> parse_candles(const QJsonDocument &document) {
     QVector<Candle> bars;
     const auto block = document.object().value("candles").toObject();
@@ -186,7 +187,7 @@ void MarketHistory::complete(const QString &symbol, int preset, const QString &k
     info.rechecked = request_.rechecked;
     info.base_revision = request_.base_revision;
     info.reused_bars = request_.reused_bars;
-    info.sha256 = content_hash(accumulated_);
+    info.sha256 = history_content_hash(accumulated_);
     const auto found = cache_.constFind(key);
     const Entry *previous = comparison ? comparison : (found == cache_.cend() ? nullptr : &found.value());
     if (previous) {
@@ -445,5 +446,25 @@ bool MarketHistory::resume() {
     page(request_.symbol, request_.preset, request_.key, request_.from, request_.till, request_.interval,
          generation, saved.last_offset);
     return true;
+}
+} // namespace live
+
+namespace live {
+std::optional<HistoryDataset> MarketHistory::dataset(const QString &key) const {
+    const auto it = cache_.constFind(key);
+    if (it == cache_.cend()) return std::nullopt;
+    return HistoryDataset{it->info, it->bars};
+}
+bool MarketHistory::restore_disk(const HistoryDataset &set) {
+    if (active_) return false;
+    try { HistoryDiskCache::validate(set); } catch (...) { return false; }
+    current_info_ = set.info;
+    current_info_.from_disk = true;
+    current_info_.archived = false;
+    const auto generation = generation_;
+    emit state_message(QStringLiteral("ДИСК: локальные свечи, сеть и происхождение не перепроверены."));
+    if (generation != generation_) return false;
+    emit loaded(set.info.symbol, set.info.preset, set.bars, true);
+    return generation == generation_;
 }
 } // namespace live

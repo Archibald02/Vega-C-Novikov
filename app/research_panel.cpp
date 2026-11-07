@@ -3,6 +3,7 @@
 #include "quote_parser.hpp"
 #include "ui_helpers.hpp"
 #include <QCryptographicHash>
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QEventLoop>
 #include <QFormLayout>
@@ -455,6 +456,7 @@ ResearchPanel::ResearchPanel(QWidget *parent, const QUrl &history_base)
         update_journey();
         status_->setText(synthetic_
                              ? QStringLiteral("ДЕМО • расчёт завершён, все цены синтетические")
+                             : local_project_ ? QStringLiteral("Локальные свечи • расчёт завершён; сеть не проверялась")
                              : QStringLiteral("MOEX ISS • расчёт закрытых задержанных свечей завершён"));
     });
     connect(load_, &QPushButton::clicked, this, [this] { begin_history_load(); });
@@ -498,11 +500,12 @@ ResearchPanel::ResearchPanel(QWidget *parent, const QUrl &history_base)
                         {b.time_ms, end, b.open, b.high, b.low, b.close, b.volume, start.offsetFromUtc()});
                 }
                 const auto info = loader_.current_info();
-                if(history_sets_ && history_sets_->findData(info.key)>=0)
+                if(!info.from_disk && history_sets_ && history_sets_->findData(info.key)>=0)
                     history_sets_->setCurrentIndex(history_sets_->findData(info.key));
                 history_origins_[symbol] =
                     QStringLiteral("%1; ред. %2; SHA %3; получено %4%5")
-                        .arg(info.archived ? QStringLiteral("АРХИВ RAM, прежняя редакция, сеть не перепроверялась")
+                        .arg(info.from_disk ? QStringLiteral("ДИСК, локальные свечи, сеть и происхождение не перепроверены")
+                                           : info.archived ? QStringLiteral("АРХИВ RAM, прежняя редакция, сеть не перепроверялась")
                                            : (cached ? QStringLiteral("RAM, без перепроверки сети")
                                                      : QStringLiteral("MOEX ISS")))
                         .arg(info.revision)
@@ -546,6 +549,7 @@ ResearchPanel::ResearchPanel(QWidget *parent, const QUrl &history_base)
         load_next();
     });
     auto dirty = [this] {
+        if (disk_cancel_ && disk_task_operation_ == 2) disk_cancel_->store(true);
         result_current_ = false;
         show_result_when_ready_ = false;
         update_journey();
@@ -556,14 +560,14 @@ ResearchPanel::ResearchPanel(QWidget *parent, const QUrl &history_base)
                 "Параметры изменены. Показаны результаты предыдущего расчёта; нажмите расчёт заново."));
     };
     for (auto *w : findChildren<QSpinBox *>())
-        connect(w, &QSpinBox::valueChanged, this, dirty);
+        if (w != disk_quota_) connect(w, &QSpinBox::valueChanged, this, dirty);
     for (auto *w : findChildren<QDoubleSpinBox *>())
         connect(w, &QDoubleSpinBox::valueChanged, this, dirty);
     for (auto *w : findChildren<QCheckBox *>())
-        if (w != expert_ && w != save_cash_ && w != save_account_)
+        if (w != expert_ && w != save_cash_ && w != save_account_ && w != disk_enabled_)
             connect(w, &QCheckBox::toggled, this, dirty);
     for (auto *w : findChildren<QComboBox *>())
-        if (w != selected_ && w != period_ && w != distribution_mode_ && w != history_sets_)
+        if (w != selected_ && w != period_ && w != distribution_mode_ && w != history_sets_ && w != disk_sets_)
             connect(w, &QComboBox::currentIndexChanged, this, dirty);
     auto source_changed = [this, dirty] {
         source_dirty_ = !data_.empty();
@@ -616,6 +620,7 @@ void ResearchPanel::set_feed_quality(const QString &value) {
         live_quality_->setText(value);
 }
 void ResearchPanel::cancel_work() {
+    if (disk_cancel_ && disk_task_operation_ != 4) disk_cancel_->store(true);
     if (snapshot_cancel_)
         snapshot_cancel_->store(true);
     if (cancel_)
@@ -711,6 +716,7 @@ void ResearchPanel::clear_private_state() {
     for (auto *c :
          {distribution_chart_, acf_chart_, price_chart_, equity_chart_, drawdown_chart_, paper_chart_})
         c->clear();
+    reset_disk_cache();
     update_journey();
 }
 void ResearchPanel::load_next() {
@@ -1277,6 +1283,7 @@ std::vector<quant::Bar> ResearchPanel::selected_bars() const {
     return it == data_.end() ? std::vector<quant::Bar>{} : it->second;
 }
 void ResearchPanel::calculate() {
+    if (disk_cancel_ && disk_task_operation_ == 2) disk_cancel_->store(true);
     if (loading_ || worker_->isRunning() || (snapshot_worker_ && snapshot_worker_->isRunning()))
         return;
     if (source_dirty_) {
@@ -1334,9 +1341,11 @@ void ResearchPanel::calculate() {
     parameters.insert("bar_count", static_cast<int>(bars.size()));
     const auto hash = fingerprint(bars);
     const auto origin =
-        (!synthetic_ && !local_project_) ? history_origins_.value(selected_->currentText()) : QString();
+        !synthetic_ ? history_origins_.value(selected_->currentText()) : QString();
     const auto source = selected_->currentText() + " • " +
-                        (local_project_ ? QStringLiteral("ЛОКАЛЬНЫЙ ПРОЕКТ, источник не перепроверен")
+                        (local_project_ ? (origin.startsWith(QStringLiteral("ДИСК"))
+                             ? QStringLiteral("ДИСК, локальные данные без сетевой проверки")
+                             : QStringLiteral("ЛОКАЛЬНЫЙ ПРОЕКТ, источник не перепроверен"))
                          : synthetic_   ? QStringLiteral("СИНТЕТИЧЕСКОЕ ДЕМО")
                                         : QStringLiteral("MOEX ISS, задержанные данные")) +
                         (origin.isEmpty() ? QString() : QStringLiteral(" • ") + origin);
@@ -1875,6 +1884,19 @@ void ResearchPanel::update_paper() {
     journal_rows(journal_, r);
 }
 void ResearchPanel::set_test_view(int index) {
+    if (index == 10) {
+        tabs_->setCurrentIndex(6);
+        for (const auto *name : {"historyManagerToggle", "historyDiskToggle"})
+            if (auto *button = findChild<QToolButton *>(name)) button->setChecked(true);
+        QTimer::singleShot(0, this, [this] {
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+            if (auto *scroll = qobject_cast<QScrollArea *>(tabs_->widget(6))) {
+                scroll->widget()->layout()->activate();
+                scroll->ensureWidgetVisible(disk_clear_, 0, 70);
+            }
+        });
+        return;
+    }
     if(index==9) {
         tabs_->setCurrentIndex(6);
         if(auto *button=findChild<QToolButton*>("historyManagerToggle"))button->setChecked(true);
