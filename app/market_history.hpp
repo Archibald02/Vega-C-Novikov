@@ -6,6 +6,7 @@
 #include <QVector>
 #include <functional>
 #include <memory>
+#include <optional>
 namespace live {
 struct Candle {
     qint64 time_ms = 0;
@@ -22,10 +23,16 @@ struct HistorySetInfo {
     qint64 fetched_ms = 0, started_ms = 0;
     bool comparable = false, limited = false, resumed = false, extended = false;
     QDate checked_from, checked_till;
-    bool prepended = false, rechecked = false, archived = false;
+    bool prepended = false, rechecked = false, archived = false, from_disk = false;
     quint64 base_revision = 0;
     int reused_bars = 0;
 };
+struct HistoryDataset {
+    HistorySetInfo info;
+    QVector<Candle> bars;
+};
+/** Canonical OHLCV fingerprint shared by RAM and explicit local cache files. */
+QString history_content_hash(const QVector<Candle> &bars);
 struct HistoryCheckpointInfo {
     bool available = false;
     QString symbol;
@@ -64,6 +71,9 @@ class MarketHistory : public QObject {
     bool recheck(const QString &key, const QDate &from, const QDate &till);
     void discard_checkpoint();
     QVector<HistorySetInfo> datasets() const;
+    std::optional<HistoryDataset> dataset(const QString &key) const;
+    /** Open validated local candles without changing/freshening the network cache or doing HTTP. */
+    bool restore_disk(const HistoryDataset &set);
     /** Superseded RAM contents: newest first, at most two per key and eight globally. */
     QVector<HistorySetInfo> archived_datasets(const QString &key) const;
     /** Open an archived revision without HTTP or replacing the current cache entry. */

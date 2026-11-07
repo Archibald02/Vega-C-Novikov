@@ -93,7 +93,7 @@ void ResearchPanel::setup_history_manager() {
     auto *layout = new QVBoxLayout(page);
     layout->addWidget(paragraph(QStringLiteral("До 8 наборов ×5000 свечей в RAM и одна "
                                                "контрольная точка загрузки (30 минут). "
-                                               "На диск ничего не пишется. Повторный выбор из "
+                                               "Дисковый кэш ниже включается отдельно. Повторный выбор из "
                                                "RAM не проверяет сеть и может "
                                                "содержать старые данные. "
                                                "Редакция описывает принятые свечи, не всю "
@@ -228,7 +228,8 @@ void ResearchPanel::setup_history_manager() {
                                                "Очистка кэша не удаляет уже показанные результаты; для "
                                                "этого есть общая очистка "
                                                "приватных данных.")));
-    auto *fold = ui::fold(QStringLiteral("Менеджер истории • RAM и возобновление"), page);
+    setup_disk_cache(layout);
+    auto *fold = ui::fold(QStringLiteral("Менеджер истории • RAM, диск и возобновление"), page);
     fold->findChild<QToolButton *>()->setObjectName("historyManagerToggle");
     data_layout_->addWidget(fold);
     connect(&loader_, &MarketHistory::history_changed, this, &ResearchPanel::refresh_history_manager);
@@ -424,6 +425,7 @@ void ResearchPanel::refresh_history_manager() {
                                 history_extend_till_->date() > sets[selected].till &&
                                 sets[selected].from.daysTo(history_extend_till_->date()) <= 7305);
     refresh_history_archive();
+    refresh_disk_controls();
 }
 void ResearchPanel::refresh_history_archive() {
     if (!history_archives_)
@@ -575,7 +577,7 @@ bool ResearchPanel::history_manager_test() {
     if (temporary.history_archives_->count() != 0 ||
         !temporary.loader_.archived_datasets(repaired.key).isEmpty())
         return false;
-    temporary.clear_private_state();
+    if (!temporary.disk_cache_test() || requests != 4) return false;
     const bool cleared = temporary.loader_.datasets().isEmpty() &&
                          !temporary.loader_.checkpoint().available && temporary.history_sets_->count() == 0 &&
                          temporary.history_origins_.isEmpty() && temporary.history_archives_->count() == 0;
@@ -586,9 +588,11 @@ bool ResearchPanel::history_manager_test() {
         button->setChecked(true);
     if (auto *button = findChild<QToolButton *>("historyArchiveToggle"))
         button->setChecked(true);
+    if (auto *button = findChild<QToolButton *>("historyDiskToggle"))
+        button->setChecked(true);
     if (auto *scroll = qobject_cast<QScrollArea *>(tabs_->widget(6))) {
         scroll->widget()->layout()->activate();
-        scroll->ensureWidgetVisible(history_archive_details_, 0, 0);
+        scroll->ensureWidgetVisible(disk_status_, 0, 0);
     }
     return true;
 }

@@ -36,7 +36,9 @@ void ResearchPanel::update_journey() {
         ready ? QStringLiteral("Анализ и проверка текущих правил • Ctrl+Enter")
               : QStringLiteral(
                     "Загрузите минимум 40 исследовательских свечей (50 при резерве 20%) и выберите акцию."));
-    const QString mode = local_project_ ? QStringLiteral("ЛОКАЛЬНЫЙ ПРОЕКТ • происхождение не перепроверено")
+    const QString mode = local_project_ ? (history_origins_.value(selected_->currentText()).startsWith(QStringLiteral("ДИСК"))
+        ? QStringLiteral("ДИСК • сеть и происхождение не перепроверены")
+        : QStringLiteral("ЛОКАЛЬНЫЙ ПРОЕКТ • происхождение не перепроверено"))
                          : synthetic_   ? QStringLiteral("ДЕМО • синтетические цены")
                                         : QStringLiteral("MOEX ISS • данные с задержкой");
     if (bars.empty())
@@ -56,7 +58,7 @@ void ResearchPanel::update_journey() {
                                            source_dirty_
                                                ? QStringLiteral(" • ИЗМЕНЕНЫ ДАТЫ/ТИКЕРЫ: загрузите заново")
                                                : QString()));
-        if (!synthetic_ && !local_project_ && !history_origins_.value(selected_->currentText()).isEmpty())
+        if (!synthetic_ && !history_origins_.value(selected_->currentText()).isEmpty())
             dataset_context_->setText(dataset_context_->text() + "\n" +
                                       history_origins_.value(selected_->currentText()));
     }

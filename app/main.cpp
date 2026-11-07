@@ -38,6 +38,13 @@ int main(int argc, char **argv) {
     const bool smoke = args.contains("--smoke-test"), moex = args.contains("--check-moex"),
                tools = args.contains("--tools-test"), stress = args.contains("--stress-test"),
                profile = args.contains("--profile");
+    // Offline GUI checks never touch a real user's opt-in disk cache.
+    std::unique_ptr<QTemporaryDir> test_cache;
+    if (smoke || tools || stress || visuals || privacy || lab || soak || profile || online_lab || moex) {
+        test_cache = std::make_unique<QTemporaryDir>();
+        if (!test_cache->isValid()) return 1;
+        app.setProperty("historyCacheDirectory", test_cache->filePath("history-cache"));
+    }
     if (args.contains("--check-catalog")) {
         live::InstrumentCatalog catalog;
         QObject::connect(&catalog, &live::InstrumentCatalog::updated, &app, [&] {

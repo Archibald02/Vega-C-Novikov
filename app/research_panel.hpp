@@ -1,5 +1,6 @@
 #pragma once
 #include "instrument_catalog.hpp"
+#include "history_disk_cache.hpp"
 #include "market_history.hpp"
 #include "portfolio_input.hpp"
 #include "quant/attribution.hpp"
@@ -191,6 +192,29 @@ class ResearchPanel : public QWidget {
     void refresh_history_archive();
     void prepare_history_set(const QString &symbol, QDate from, QDate till, int interval);
     bool history_manager_test();
+    void setup_disk_cache(QVBoxLayout *layout);
+    void refresh_disk_controls();
+    void disk_operation(int operation); // 0 list, 1 save, 2 open, 3 trim, 4 clear
+    void reset_disk_cache();
+    bool disk_cache_test();
+    struct DiskReply {
+        HistoryDiskCatalog catalog;
+        std::optional<HistoryDataset> opened;
+        QString message;
+    };
+    QFutureWatcher<DiskReply> *disk_worker_ = nullptr;
+    std::shared_ptr<std::atomic<bool>> disk_cancel_;
+    QCheckBox *disk_enabled_ = nullptr;
+    QSpinBox *disk_quota_ = nullptr;
+    QComboBox *disk_sets_ = nullptr;
+    QLabel *disk_status_ = nullptr;
+    QPushButton *disk_save_ = nullptr, *disk_open_ = nullptr, *disk_refresh_ = nullptr;
+    QPushButton *disk_trim_ = nullptr, *disk_clear_ = nullptr;
+    QString disk_directory_;
+    bool disk_busy_ = false, disk_clear_pending_ = false;
+    quint64 disk_study_generation_ = 0;
+    int disk_task_operation_ = 0;
+
     QComboBox *history_archives_ = nullptr;
     QLabel *history_archive_details_ = nullptr;
     QPushButton *history_archive_restore_ = nullptr, *history_archive_remove_ = nullptr;
