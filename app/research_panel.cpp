@@ -253,9 +253,13 @@ ResearchPanel::ResearchPanel(QWidget *parent, const QUrl &history_base)
     step_title_->setStyleSheet("font-size:21px;font-weight:600;");
     heading->addWidget(step_title_, 1);
     calculate_ = new QPushButton(QStringLiteral("Рассчитать"));
-    calculate_->setObjectName("connectButton");
-    calculate_->setShortcut(QKeySequence("Ctrl+Return"));
-    cancel_button_ = new QPushButton(QStringLiteral("Отменить загрузку / расчёт"));
+    auto *calculate_shortcut = new QShortcut(QKeySequence("Ctrl+Return"), this);
+    calculate_shortcut->setContext(Qt::WidgetWithChildrenShortcut);
+    connect(calculate_shortcut, &QShortcut::activated, this, [this] {
+        if (calculate_->isEnabled())
+            calculate();
+    });
+    cancel_button_ = new QPushButton(QStringLiteral("Отменить"));
     auto *cancel = cancel_button_;
     heading->addWidget(calculate_);
     heading->addWidget(cancel);
@@ -269,12 +273,14 @@ ResearchPanel::ResearchPanel(QWidget *parent, const QUrl &history_base)
     auto *body = new QHBoxLayout;
     journey_ = new QListWidget;
     journey_->setObjectName("researchJourney");
-    journey_->setFixedWidth(182);
+    journey_->setAccessibleName(QStringLiteral("Шаги исследования"));
+    journey_->setMinimumWidth(168);
+    journey_->setMaximumWidth(190);
     journey_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     const QStringList steps{QStringLiteral("1  Данные"),           QStringLiteral("2  Качество"),
                             QStringLiteral("3  Анализ"),           QStringLiteral("4  Стратегия"),
-                            QStringLiteral("5  Результат"),        QStringLiteral("6  Устойчивость"),
-                            QStringLiteral("7  Виртуальный счёт"), QStringLiteral("Проект и отчёт"),
+                            QStringLiteral("5  Результат"),        QStringLiteral("Устойчивость"),
+                            QStringLiteral("Виртуальный счёт"),    QStringLiteral("Проект и отчёт"),
                             QStringLiteral("Справка и термины")};
     const int targets[]{6, 4, 0, 1, 2, 5, 3, 7, 8};
     for (int i = 0; i < steps.size(); ++i) {
@@ -289,8 +295,14 @@ ResearchPanel::ResearchPanel(QWidget *parent, const QUrl &history_base)
     data_page_ = new QWidget;
     data_layout_ = new QVBoxLayout(data_page_);
     data_layout_->setSpacing(12);
-    data_layout_->addWidget(text(QStringLiteral(
-        "Здесь выбирается история для исследования. Она не зависит от таблицы текущих котировок.")));
+    auto *data_card = new QFrame;
+    data_card->setObjectName("studySetup");
+    auto *data_setup = new QVBoxLayout(data_card);
+    data_setup->setContentsMargins(15, 12, 15, 12);
+    data_setup->setSpacing(9);
+    data_setup->addWidget(text(QStringLiteral(
+        "Выберите акции и период. ДЕМО подставит готовый пример без интернета.")));
+    data_layout_->addWidget(data_card);
     symbols_ = new QLineEdit("SBER, GAZP, LKOH");
     symbols_->setMaxLength(256);
     symbols_->setPlaceholderText(QStringLiteral("Например: SBER, GAZP, LKOH"));
@@ -302,7 +314,7 @@ ResearchPanel::ResearchPanel(QWidget *parent, const QUrl &history_base)
     period_->setCurrentIndex(1);
     auto *data_form = new QFormLayout;
     auto *ticker_row = new QHBoxLayout;
-    auto *catalog_button = new QPushButton(QStringLiteral("Выбрать из списка…"));
+    auto *catalog_button = new QPushButton(QStringLiteral("Каталог акций"));
     ticker_row->addWidget(symbols_, 1);
     ticker_row->addWidget(catalog_button);
     data_form->addRow(QStringLiteral("Акции для загрузки"), ticker_row);
@@ -322,7 +334,7 @@ ResearchPanel::ResearchPanel(QWidget *parent, const QUrl &history_base)
         }
     });
     data_form->addRow(QStringLiteral("Период и размер свечи"), period_);
-    data_layout_->addLayout(data_form);
+    data_setup->addLayout(data_form);
     custom_dates_ = new QCheckBox(QStringLiteral("Выбрать свои даты"));
     const auto today = QDateTime::currentDateTimeUtc().toTimeZone(QTimeZone("Europe/Moscow")).date();
     from_ = new QDateEdit(today.addYears(-3));
@@ -337,7 +349,7 @@ ResearchPanel::ResearchPanel(QWidget *parent, const QUrl &history_base)
     dates->addRow(custom_dates_);
     dates->addRow(QStringLiteral("С даты"), from_);
     dates->addRow(QStringLiteral("По дату включительно"), till_);
-    data_layout_->addLayout(dates);
+    data_setup->addLayout(dates);
     dates->setRowVisible(from_, false);
     dates->setRowVisible(till_, false);
     connect(custom_dates_, &QCheckBox::toggled, this, [this, dates](bool on) {
@@ -349,14 +361,14 @@ ResearchPanel::ResearchPanel(QWidget *parent, const QUrl &history_base)
     auto *actions = new QHBoxLayout;
     load_ = new QPushButton(QStringLiteral("Загрузить свечи MOEX"));
     load_->setObjectName("connectButton");
-    auto *demo_button = new QPushButton(QStringLiteral("Попробовать ДЕМО без сети"));
+    auto *demo_button = new QPushButton(QStringLiteral("Открыть ДЕМО"));
     actions->addWidget(load_);
     actions->addWidget(demo_button);
     actions->addStretch();
-    data_layout_->addLayout(actions);
+    data_setup->addLayout(actions);
     history_queue_status_ = text(QStringLiteral("Очередь следует порядку тикеров в поле выше."));
     history_queue_status_->setAccessibleName(QStringLiteral("Ход загрузки истории"));
-    data_layout_->addWidget(history_queue_status_);
+    data_setup->addWidget(history_queue_status_);
     data_layout_->addWidget(
         text(QStringLiteral("MOEX — официальные данные с задержкой, без регистрации. ДЕМО — вымышленные "
                             "цены. До 6 акций × 5000 свечей; незавершённые свечи исключаются.")));

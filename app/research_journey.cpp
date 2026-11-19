@@ -17,14 +17,21 @@ void ResearchPanel::update_journey() {
         QSignalBlocker blocker(journey_);
         journey_->setCurrentRow(row);
     }
-    if (row >= 0)
-        step_title_->setText(journey_->item(row)->text());
+    const QStringList titles{
+        QStringLiteral("Выберите данные"), QStringLiteral("Проверьте историю"),
+        QStringLiteral("Изучите графики"), QStringLiteral("Настройте стратегию"),
+        QStringLiteral("Результат стратегии"), QStringLiteral("Проверка устойчивости"),
+        QStringLiteral("Виртуальный счёт"), QStringLiteral("Проект и отчёт"),
+        QStringLiteral("Справка")};
+    step_title_->setText(titles.value(row));
     const auto bars = selected_bars();
     const bool busy =
         loading_ || (worker_ && worker_->isRunning()) || (snapshot_worker_ && snapshot_worker_->isRunning());
     const auto size = reserve_->isChecked() ? bars.size() * 8 / 10 : bars.size();
     const bool ready = size >= 40 && !source_dirty_ && !loading_;
     calculate_->setEnabled(ready && !busy);
+    calculate_->setVisible(row == 2 || row == 4);
+    cancel_button_->setVisible(busy || calendar_loading_);
     calculate_->setText(result_current_ ? QStringLiteral("Пересчитать") : QStringLiteral("Рассчитать"));
     cancel_button_->setEnabled(busy || calendar_loading_);
     calendar_check_->setEnabled(!busy && !calendar_loading_ && !synthetic_ && !local_project_ &&
@@ -60,9 +67,9 @@ void ResearchPanel::update_journey() {
                                            source_dirty_
                                                ? QStringLiteral(" • ИЗМЕНЕНЫ ДАТЫ/ТИКЕРЫ: загрузите заново")
                                                : QString()));
-        if (!synthetic_ && !history_origins_.value(selected_->currentText()).isEmpty())
-            dataset_context_->setText(dataset_context_->text() + "\n" +
-                                      history_origins_.value(selected_->currentText()));
+        // Detailed origin and hashes remain on the quality step and in the report.
+        if (history_origins_.value(selected_->currentText()).startsWith(QStringLiteral("АРХИВ")))
+            dataset_context_->setText(QStringLiteral("АРХИВ RAM • ") + dataset_context_->text());
     }
     if (last_result_.simulation.equity.empty()) {
         result_context_->setText(
@@ -85,26 +92,47 @@ void ResearchPanel::update_journey() {
         QStringLiteral("Проверить устойчивость →"), QStringLiteral("Открыть виртуальный счёт →"),
         QStringLiteral("Проект и отчёт →"),         QStringLiteral("Вернуться к данным"),
         QStringLiteral("Вернуться к данным")};
-    next_->setText(actions.value(row, QStringLiteral("Далее →")));
-    next_->setEnabled((row == 0 || row == 1 || row == 2) ? !bars.empty() && !source_dirty_ && !loading_
-                      : row == 3                         ? ready && !busy
-                                                         : true);
+    const bool data_ready = !bars.empty() && !source_dirty_;
+    const bool needs_data = row >= 1 && row <= 6 && !data_ready;
+    const bool needs_result = (row == 4 || row == 5) && !result_current_;
+    next_->setVisible(row != 0 || data_ready);
+    next_->setText(needs_data ? QStringLiteral("Выбрать данные →")
+                  : needs_result ? QStringLiteral("Перейти к стратегии →")
+                                 : actions.value(row, QStringLiteral("Далее →")));
+    next_->setEnabled(!busy && (needs_data || row != 3 || ready));
     const QStringList hints{
-        QStringLiteral("После загрузки выберите акцию в списке «Анализировать»."),
-        QStringLiteral("Предупреждения объясняют ограничения данных; подробности можно раскрыть."),
-        QStringLiteral("Первый расчёт использует стандартные правила и учитывает издержки."),
-        QStringLiteral("Сигнал — на закрытии, виртуальное исполнение — на следующем открытии."),
-        QStringLiteral("Просадка и издержки помогают оценить результат рядом с доходностью."),
-        QStringLiteral("Финальные 20% открывайте один раз, после выбора правил."),
-        QStringLiteral("Проигрывание архива и новые свечи — разные режимы виртуального счёта."),
-        QStringLiteral("Капитал и котировки не входят в проект без отдельных флажков."),
-        QStringLiteral("Основной режим MOEX не требует аккаунта или ключа.")};
-    step_hint_->setText(hints.value(row));
+        QStringLiteral("Проверьте, какой период фактически загрузился."),
+        QStringLiteral("На следующем шаге откроются графики и показатели."),
+        QStringLiteral("Готовые правила можно запустить с настройками по умолчанию."),
+        QStringLiteral("Результат покажет доходность, просадку и издержки."),
+        QStringLiteral("Сравните доходность с просадкой и простой покупкой."),
+        QStringLiteral("Проверка показывает, как результат меняется при других условиях."),
+        QStringLiteral("Можно проиграть историю или использовать новые свечи MOEX."),
+        QStringLiteral("Сохраните настройки или экспортируйте рассчитанный отчёт."),
+        QStringLiteral("Чтобы продолжить исследование, вернитесь к данным.")};
+    if (busy || calendar_loading_)
+        step_hint_->setText(QStringLiteral("Выполняется операция. При необходимости нажмите «Отменить»."));
+    else if (row == 0 && !data_ready)
+        step_hint_->setText(QStringLiteral("Загрузите свечи MOEX или откройте ДЕМО выше."));
+    else if (needs_data)
+        step_hint_->setText(QStringLiteral("Для этого шага сначала нужны свечи выбранной акции."));
+    else if (row == 3 && !ready)
+        step_hint_->setText(QStringLiteral("Нужно 40 свечей для расчёта или 50 при резерве 20%."));
+    else
+        step_hint_->setText(hints.value(row));
     if (auto *b = findChild<QPushButton *>("loadMetadata"))
         b->setEnabled(!synthetic_ && !loading_);
 }
 void ResearchPanel::next_step() {
     const int row = journey_->currentRow();
+    if (row >= 1 && row <= 6 && (selected_bars().empty() || source_dirty_)) {
+        journey_->setCurrentRow(0);
+        return;
+    }
+    if ((row == 4 || row == 5) && !result_current_) {
+        journey_->setCurrentRow(3);
+        return;
+    }
     if (row == 3) {
         const int before = attempts_;
         show_result_when_ready_ = true;

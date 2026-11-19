@@ -19,6 +19,7 @@
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSettings>
 #include <QShortcut>
 #include <QSignalBlocker>
@@ -72,6 +73,21 @@ MainWindow::MainWindow(bool test_mode) : test_mode_(test_mode) {
       QPushButton:checked{background:#16544d;border-color:#39d2b0;} QWidget:disabled{color:#74899d;}
       QLineEdit:focus,QComboBox:focus,QSpinBox:focus,QDoubleSpinBox:focus,QPushButton:focus,QToolButton:focus{border:2px solid #57dcc7;}
       QListWidget::item{padding:11px 7px;border-bottom:1px solid #23374a;} QListWidget::item:selected{background:#205047;color:#fff;}
+      QFrame#welcomePanel{background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #183549,stop:1 #10271f);border:1px solid #35565b;border-radius:14px;}
+      QFrame#welcomeGuide{background:#101f2a;border:1px solid #36535b;border-radius:10px;}
+      QFrame#startCard{background:#122235;border:1px solid #2d455c;border-radius:10px;}
+      QLabel#welcomeTitle{font-size:28px;font-weight:700;color:#f1f7ff;}
+      QLabel#welcomeDescription,QLabel#cardDescription{color:#b9cddd;}
+      QLabel#cardTitle{font-size:17px;font-weight:700;color:#edf5ff;}
+      QPushButton[primary="true"],QPushButton#connectButton{background:#67e1c2;color:#0c2625;border:1px solid #79efd2;}
+      QPushButton[primary="true"]:hover,QPushButton#connectButton:hover{background:#90ebd5;color:#0c2625;}
+      QPushButton[primary="true"]:focus,QPushButton#connectButton:focus{border:2px solid #f4fff9;}
+      QPushButton[primary="true"]:disabled,QPushButton#connectButton:disabled{background:#152233;color:#8ba0b4;border:1px solid #31465d;}
+      QPushButton[workspaceNav="true"]{background:#132235;border-radius:7px;}
+      QPushButton[workspaceNav="true"]:checked{background:#1d453f;color:#dcfff3;border-color:#61bba8;}
+      QPushButton[workspaceNav="true"]:focus{border:2px solid #75ead0;}
+      QFrame#studySetup{background:#122235;border:1px solid #2d455c;border-radius:10px;}
+      QLabel#workspaceContext{color:#9eb6ca;}
       QTabWidget::pane{border:1px solid #25394e;} QSplitter::handle{background:#0b1420;height:8px;}
     )";
     apply_text_size(13);
@@ -86,10 +102,8 @@ MainWindow::MainWindow(bool test_mode) : test_mode_(test_mode) {
     layout->setSpacing(10);
     auto *heading = new QHBoxLayout;
     heading->addWidget(
-        label("QUANT / PRICE LIVE " QUANT_PRICE_LIVE_VERSION, "font-size:23px;font-weight:700;letter-spacing:2px;"));
+        label("Quant Price Live", "font-size:23px;font-weight:700;"));
     heading->addStretch();
-    heading->addWidget(
-        label(QStringLiteral("Учебный терминал • только виртуальные сделки"), "color:#85a1b9;"));
     layout->addLayout(heading);
     auto *navigation = new QGridLayout;
     home_nav_ = new QPushButton(QStringLiteral("Начало"));
@@ -129,13 +143,16 @@ MainWindow::MainWindow(bool test_mode) : test_mode_(test_mode) {
     auto *find = new QPushButton(QStringLiteral("Поиск • Ctrl+K"));
     find->setAccessibleName(QStringLiteral("Поиск функций"));
     find->setToolTip(QStringLiteral("Найти раздел по названию, сокращению или задаче. Сеть не запускается."));
-    navigation->addWidget(find, 1, 0, 1, 2);
+    heading->addWidget(find);
     connect(find, &QPushButton::clicked, this, &MainWindow::show_function_search);
     auto *find_key = new QShortcut(QKeySequence("Ctrl+K"), this);
     connect(find_key, &QShortcut::activated, this, &MainWindow::show_function_search);
-    navigation->addWidget(settings_nav, 1, 3, 1, 2);
+    heading->addWidget(settings_nav);
+    for (auto *button : {home_nav_, quotes_nav_, lab_nav_, learning_nav_, portfolio_nav_})
+        button->setProperty("workspaceNav", true);
     layout->addLayout(navigation);
     workspace_context_ = label(QString());
+    workspace_context_->setObjectName("workspaceContext");
     workspace_context_->setWordWrap(true);
     layout->addWidget(workspace_context_);
     quote_controls_ = new QWidget;
@@ -178,13 +195,13 @@ MainWindow::MainWindow(bool test_mode) : test_mode_(test_mode) {
     settings->addLayout(right, 1);
     quote_layout->addLayout(settings);
     auto *buttons = new QHBoxLayout;
-    start_ = new QPushButton(QStringLiteral("Подключить"));
+    start_ = new QPushButton(QStringLiteral("Запустить котировки"));
     start_->setObjectName("connectButton");
     stop_ = new QPushButton(QStringLiteral("Отключить"));
     stop_->setEnabled(false);
     catalog_button_ = new QPushButton(QStringLiteral("Каталог акций"));
     auto *api = new QPushButton(QStringLiteral("Как подключиться"));
-    connection_ = label(QStringLiteral("Отключено"), "color:#a6bdd1;");
+    connection_ = label(QStringLiteral("Нажмите «Запустить котировки», чтобы получить цены."), "color:#a6bdd1;");
     connection_->setWordWrap(true);
     for (auto *b : {start_, stop_, catalog_button_, api})
         buttons->addWidget(b);
@@ -1248,6 +1265,14 @@ bool MainWindow::exercise_visuals_test() {
                 for (int pass = 0; pass < 3; ++pass) {
                     QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
                     QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+                }
+                if (tab == 8) {
+                    auto *home = qobject_cast<QScrollArea *>(tabs_->widget(8));
+                    if (!home || home->horizontalScrollBar()->maximum() != 0) {
+                        std::fprintf(stderr, "Home screen requires horizontal scrolling: text=%d window=%dx%d\n",
+                                     text_pixels, width(), height());
+                        return false;
+                    }
                 }
                 if (tab == 7 && !rect().contains(QRect(lab_->mapTo(this, QPoint(0, 0)), lab_->size()))) {
                     const auto origin = lab_->mapTo(this, QPoint(0, 0));

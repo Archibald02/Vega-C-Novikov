@@ -130,6 +130,19 @@ void MainWindow::load_workspace_preferences() {
     column_preset_->setCurrentIndex(hidden ? 0 : 1);
 }
 bool MainWindow::workspace_tools_test() {
+    tabs_->setCurrentIndex(8);
+    const QList<QPair<const char *, int>> home_actions{
+        {"startQuotes", 0}, {"startResearch", 7}, {"startLessons", 9}, {"startPortfolio", 10},
+        {"startDemo", 7}};
+    for (const auto &action : home_actions) {
+        auto *button = tabs_->widget(8)->findChild<QPushButton *>(action.first);
+        if (!button || !button->isEnabled())
+            return false;
+        button->click();
+        if (tabs_->currentIndex() != action.second)
+            return false;
+        tabs_->setCurrentIndex(8);
+    }
     FunctionSearch dialog(this);
     if (dialog.results()->count() != function_destinations().size())
         return false;

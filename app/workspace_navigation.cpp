@@ -2,70 +2,96 @@
 #include "ui_helpers.hpp"
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QGridLayout>
 #include <QVBoxLayout>
 namespace live {
 QWidget *MainWindow::home_panel() {
     auto *page = new QWidget;
     auto *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(24, 18, 24, 24);
-    auto *title = ui::paragraph(QStringLiteral("С чего начнём?"));
-    title->setStyleSheet("font-size:26px;font-weight:600;");
-    layout->addWidget(title);
-    layout->addWidget(
-        ui::paragraph(QStringLiteral("Выберите задачу. Для публичных данных MOEX не нужны логин, пароль или "
-                                     "API-ключ. Данные биржи поступают с задержкой.")));
-    auto *cards = new QHBoxLayout;
-    cards->setSpacing(14);
+    layout->setContentsMargins(2, 4, 2, 10);
+    layout->setSpacing(14);
+
+    auto *welcome = new QFrame;
+    welcome->setObjectName("welcomePanel");
+    auto *hero = new QHBoxLayout(welcome);
+    hero->setContentsMargins(28, 24, 28, 24);
+    hero->setSpacing(28);
+    auto *intro = new QVBoxLayout;
+    intro->setSpacing(12);
+    auto *title = ui::paragraph(QStringLiteral("От цены акции к результату стратегии"));
+    title->setObjectName("welcomeTitle");
+    intro->addWidget(title);
+    auto *description = ui::paragraph(QStringLiteral(
+        "Начните с готового примера. В нём есть вымышленные цены и правила, чтобы сразу попробовать анализ и увидеть результат."));
+    description->setObjectName("welcomeDescription");
+    intro->addWidget(description);
+    auto *demo = new QPushButton(QStringLiteral("Начать с ДЕМО"));
+    demo->setObjectName("startDemo");
+    demo->setProperty("primary", true);
+    intro->addWidget(demo, 0, Qt::AlignLeft);
+    connect(demo, &QPushButton::clicked, this, [this] {
+        tabs_->setCurrentIndex(7);
+        lab_->show_demo();
+    });
+    hero->addLayout(intro, 3);
+
+    auto *guide = new QFrame;
+    guide->setObjectName("welcomeGuide");
+    auto *steps = new QVBoxLayout(guide);
+    steps->setContentsMargins(16, 14, 16, 14);
+    steps->setSpacing(7);
+    auto *guide_title = ui::paragraph(QStringLiteral("Что вы сделаете"));
+    guide_title->setObjectName("cardTitle");
+    steps->addWidget(guide_title);
+    steps->addWidget(ui::paragraph(QStringLiteral("1. Откроете историю цен")));
+    steps->addWidget(ui::paragraph(QStringLiteral("2. Проверите правила на этой истории")));
+    steps->addWidget(ui::paragraph(QStringLiteral("3. Посмотрите доходность и риск")));
+    hero->addWidget(guide, 2);
+    layout->addWidget(welcome);
+
+    auto *cards = new QGridLayout;
+    cards->setSpacing(12);
+    cards->setColumnStretch(0, 1);
+    cards->setColumnStretch(1, 1);
     layout->addLayout(cards);
-    auto card = [&](const QString &heading, const QString &description, const QString &action,
-                    auto callback) {
+    auto card = [&](int row, int column, const QString &heading, const QString &description,
+                    const QString &action, const char *name, auto callback) {
         auto *box = new QFrame;
         box->setObjectName("startCard");
-        box->setStyleSheet(
-            "QFrame#startCard{background:#132235;border:1px solid #2b4358;border-radius:8px;}");
-        auto *column = new QVBoxLayout(box);
-        column->setContentsMargins(20, 16, 20, 16);
-        auto *h = ui::paragraph(heading);
-        h->setStyleSheet("font-size:19px;font-weight:600;border:0;");
-        column->addWidget(h);
-        column->addWidget(ui::paragraph(description));
+        auto *content = new QVBoxLayout(box);
+        content->setContentsMargins(16, 12, 16, 12);
+        content->setSpacing(8);
+        auto *title = ui::paragraph(heading);
+        title->setObjectName("cardTitle");
+        content->addWidget(title);
+        auto *details = ui::paragraph(description);
+        details->setObjectName("cardDescription");
+        content->addWidget(details, 1);
         auto *button = new QPushButton(action);
-        button->setObjectName("connectButton");
-        column->addWidget(button, 0, Qt::AlignLeft);
+        button->setObjectName(name);
+        content->addWidget(button, 0, Qt::AlignLeft);
         connect(button, &QPushButton::clicked, this, callback);
-        cards->addWidget(box, 1);
+        cards->addWidget(box, row, column);
     };
-    card(QStringLiteral("Посмотреть цены акций"),
-         QStringLiteral(
-             "Таблица и график текущих обновлений. Выберите акции из каталога, затем подключите источник."),
-         QStringLiteral("Открыть котировки"), [this] {
+    card(0, 0, QStringLiteral("Котировки"), QStringLiteral("Таблица и график цен MOEX с задержкой."),
+         QStringLiteral("Открыть котировки"), "startQuotes", [this] {
              tabs_->setCurrentIndex(0);
-             symbols_->setFocus();
+             start_->setFocus(Qt::OtherFocusReason);
          });
-    card(QStringLiteral("Исследовать данные и стратегию"),
-         QStringLiteral("Закрытые свечи → качество данных → анализ → правила → результат → устойчивость. Все "
-                        "сделки виртуальные."),
-         QStringLiteral("Начать исследование"), [this] {
+    card(0, 1, QStringLiteral("Исследование"), QStringLiteral("Загрузите историю акций и проверьте стратегию."),
+         QStringLiteral("Выбрать акции и период"), "startResearch", [this] {
              tabs_->setCurrentIndex(7);
-             lab_->set_test_view(6);
+             lab_->navigate_to(6);
          });
-    card(QStringLiteral("Попробовать без подключения"),
-         QStringLiteral("Готовый синтетический пример. Можно пройти все шаги и увидеть отчёт, не "
-                        "регистрируясь и не отправляя сетевых запросов."),
-         QStringLiteral("Открыть учебное ДЕМО"), [this] {
-             tabs_->setCurrentIndex(7);
-             lab_->show_demo();
-         });
-    layout->addWidget(ui::paragraph(QStringLiteral(
-        "Ctrl+K — поиск функций • Ctrl+1…5 — начало, котировки, исследование, задания, портфель\nПроекты и "
-        "отчёты сохраняются только по вашему действию. Токены не записываются на диск.")));
-    auto *lessons =
-        new QPushButton(QStringLiteral("Понять комиссии, риск и подбор параметров — учебные задания"));
-    connect(lessons, &QPushButton::clicked, this, [this] { tabs_->setCurrentIndex(9); });
-    layout->addWidget(lessons, 0, Qt::AlignLeft);
-    auto *portfolio = new QPushButton(QStringLiteral("Исследовать портфель нескольких акций"));
-    connect(portfolio, &QPushButton::clicked, this, [this] { tabs_->setCurrentIndex(10); });
-    layout->addWidget(portfolio, 0, Qt::AlignLeft);
+    card(1, 0, QStringLiteral("Учебные задания"), QStringLiteral("Разберите комиссии, риск и подбор параметров."),
+         QStringLiteral("Открыть задания"), "startLessons", [this] { tabs_->setCurrentIndex(9); });
+    card(1, 1, QStringLiteral("Портфель"), QStringLiteral("Проверьте несколько акций с общим виртуальным капиталом."),
+         QStringLiteral("Открыть портфель"), "startPortfolio", [this] { tabs_->setCurrentIndex(10); });
+
+    auto *note = ui::paragraph(QStringLiteral(
+        "ДЕМО работает без интернета. Публичные данные MOEX доступны без аккаунта. Сделки в приложении виртуальные."));
+    note->setObjectName("cardDescription");
+    layout->addWidget(note);
     layout->addStretch();
     return page;
 }
@@ -94,5 +120,6 @@ void MainWindow::update_workspace() {
         QStringLiteral("Учебные задания • автономные синтетические примеры"),
         QStringLiteral("Портфель • общий виртуальный капитал и синхронные свечи")};
     workspace_context_->setText(names.value(index));
+    workspace_context_->setVisible(index != 8);
 }
 } // namespace live

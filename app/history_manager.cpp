@@ -528,6 +528,12 @@ bool ResearchPanel::history_manager_test() {
         }
     });
     ResearchPanel temporary(nullptr, QUrl(QString("http://127.0.0.1:%1/").arg(server.serverPort())));
+    temporary.navigate_to(2);
+    if (temporary.next_->text() != QStringLiteral("Выбрать данные →") || !temporary.next_->isEnabled())
+        return false;
+    temporary.next_->click();
+    if (temporary.tabs_->currentIndex() != 6 || !temporary.next_->isHidden())
+        return false;
     QEventLoop loop;
     connect(&temporary.loader_, &MarketHistory::loaded, &loop, &QEventLoop::quit);
     temporary.loader_.load_range("SBER", QDate(2024, 1, 1), QDate(2024, 3, 1), 24);
