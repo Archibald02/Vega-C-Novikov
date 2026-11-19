@@ -53,7 +53,11 @@ class MainWindow : public QMainWindow {
     void stop_for_test();
     std::uint64_t chart_rebuilds() const { return chart_->rebuild_count(); }
 
+  protected:
+    void closeEvent(QCloseEvent *event) override;
+
   private:
+    bool close_after_disk_cleanup_ = false;
     struct Row {
         Row(std::size_t window, std::size_t history) : stats(window), indicators(window), points(history) {}
         quant::RollingSeries stats;

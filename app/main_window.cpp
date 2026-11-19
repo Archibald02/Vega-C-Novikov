@@ -2,6 +2,11 @@
 #include "catalog_dialog.hpp"
 #include "ui_helpers.hpp"
 #include <QApplication>
+#include <QCloseEvent>
+#include <QEventLoop>
+#include <QFile>
+#include <QStatusBar>
+#include <QTemporaryDir>
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QFontMetrics>
@@ -283,6 +288,18 @@ MainWindow::MainWindow(bool test_mode) : test_mode_(test_mode) {
     tabs_->addTab(candles_, QStringLiteral("Свечи MOEX"));
     tabs_->addTab(comparison_panel(), QStringLiteral("Сравнение"));
     lab_ = new ResearchPanel;
+    connect(lab_, &ResearchPanel::disk_cleanup_finished, this, [this](bool success) {
+        const bool closing = close_after_disk_cleanup_;
+        close_after_disk_cleanup_ = false;
+        if (!success) {
+            statusBar()->showMessage(QStringLiteral(
+                "Дисковый кэш очищен не полностью. Закройте другие копии программы и повторите очистку."));
+            return;
+        }
+        statusBar()->clearMessage();
+        if (closing)
+            close();
+    });
     tabs_->addTab(lab_, QStringLiteral("Лаборатория"));
     // Each pane scrolls independently, so the tallest settings page cannot force the whole window off screen.
     for (int i = 0; i < tabs_->count(); ++i) {
@@ -1267,6 +1284,15 @@ bool MainWindow::exercise_visuals_test() {
     tabs_->setCurrentIndex(5);
     return true;
 }
+void MainWindow::closeEvent(QCloseEvent *event) {
+    if (lab_->disk_cleanup_pending()) {
+        close_after_disk_cleanup_ = true;
+        statusBar()->showMessage(QStringLiteral("Закрытие после очистки дискового кэша…"));
+        event->ignore();
+        return;
+    }
+    QMainWindow::closeEvent(event);
+}
 bool MainWindow::exercise_privacy_test() {
     if (!lab_->privacy_test())
         return false;
@@ -1324,7 +1350,36 @@ bool MainWindow::exercise_privacy_test() {
         if (!settings.allKeys().isEmpty())
             return false;
     }
-    return rows_.empty() && tickers_.isEmpty() && token_->text().isEmpty() && table_->rowCount() == 0;
+    if (!rows_.empty() || !tickers_.isEmpty() || !token_->text().isEmpty() || table_->rowCount() != 0)
+        return false;
+
+    QTemporaryDir cache;
+    if (!cache.isValid())
+        return false;
+    const char property[] = "historyCacheDirectory";
+    const auto previous = qApp->property(property);
+    qApp->setProperty(property, cache.path());
+    MainWindow closing(true);
+    qApp->setProperty(property, previous);
+    const QString path = cache.filePath(HistoryDiskCache::file_name("test"));
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly) || file.write("test", 4) != 4)
+        return false;
+    file.close();
+    auto *enabled = closing.lab_->findChild<QCheckBox *>("historyDiskEnabled");
+    if (!enabled)
+        return false;
+    closing.show();
+    enabled->setChecked(true);
+    closing.lab_->clear_private_state();
+    closing.lab_->clear_private_state();
+    if (!closing.lab_->disk_cleanup_pending() || closing.close() || !closing.isVisible())
+        return false;
+    QEventLoop loop;
+    QObject::connect(closing.lab_, &ResearchPanel::disk_cleanup_finished, &loop, &QEventLoop::quit);
+    QTimer::singleShot(5000, &loop, &QEventLoop::quit);
+    loop.exec();
+    return !closing.isVisible() && !closing.lab_->disk_cleanup_pending() && !QFile::exists(path);
 }
 void MainWindow::select_visual_test(int index) {
     tabs_->setCurrentIndex(index);

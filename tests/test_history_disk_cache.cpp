@@ -180,3 +180,39 @@ TEST_CASE("History disk cache replaces a key atomically and handles lock cancell
     CHECK(read_bytes(outside) == original);
 #endif
 }
+
+TEST_CASE("Cache cleanup recovers an overfilled directory without removing unrelated files") {
+    QTemporaryDir dir;
+    REQUIRE(dir.isValid());
+    std::atomic<bool> cancel{false};
+    for (int i = 0; i < 65; ++i)
+        write_bytes(dir.filePath(live::HistoryDiskCache::file_name(QString::number(i))), "invalid fixture");
+    const auto unrelated = dir.filePath("notes.json");
+    write_bytes(unrelated, "keep");
+    CHECK_THROWS(live::HistoryDiskCache::catalog(dir.path(), cancel));
+    live::HistoryDiskCache::clear(dir.path(), cancel);
+    CHECK(live::HistoryDiskCache::catalog(dir.path(), cancel).bytes == 0);
+    CHECK(read_bytes(unrelated) == "keep");
+}
+
+TEST_CASE("A cancelled or blocked cache save keeps the existing quota entries") {
+    QTemporaryDir dir;
+    REQUIRE(dir.isValid());
+    std::atomic<bool> cancel{false};
+    for (int i = 0; i < live::HistoryDiskCache::entry_limit; ++i)
+        live::HistoryDiskCache::write(dir.path(), sample("T" + QString::number(i)),
+                                     live::HistoryDiskCache::default_quota, cancel);
+    const auto before = live::HistoryDiskCache::catalog(dir.path(), cancel);
+    REQUIRE(before.items.size() == live::HistoryDiskCache::entry_limit);
+    const auto incoming = sample("NEW");
+    cancel = true;
+    CHECK_THROWS(live::HistoryDiskCache::write(dir.path(), incoming, live::HistoryDiskCache::default_quota, cancel));
+    cancel = false;
+    REQUIRE(QDir(dir.path()).mkdir(live::HistoryDiskCache::file_name(incoming.info.key)));
+    CHECK_THROWS(live::HistoryDiskCache::write(dir.path(), incoming, live::HistoryDiskCache::default_quota, cancel));
+    const auto after = live::HistoryDiskCache::catalog(dir.path(), cancel);
+    REQUIRE(after.items.size() == before.items.size());
+    CHECK(after.bytes == before.bytes);
+    for (int i = 0; i < after.items.size(); ++i)
+        CHECK(after.items[i].info.key == before.items[i].info.key);
+}

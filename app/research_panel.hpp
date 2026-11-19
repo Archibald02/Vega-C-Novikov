@@ -54,6 +54,7 @@ struct LabResult {
 };
 /** Standalone bounded research workspace. All broker interactions remain read-only. */
 class ResearchPanel : public QWidget {
+    Q_OBJECT
   public:
     explicit ResearchPanel(
         QWidget *parent = nullptr,
@@ -63,6 +64,8 @@ class ResearchPanel : public QWidget {
     void set_symbol(const QString &symbol);
     void set_feed_quality(const QString &text);
     void clear_private_state();
+    /** True while an explicitly requested disk cleanup is queued or running. */
+    bool disk_cleanup_pending() const { return disk_clear_pending_ || (disk_busy_ && disk_task_operation_ == 4); }
     bool self_test();
     PortfolioInput portfolio_input() const;
     bool privacy_test();
@@ -75,6 +78,9 @@ class ResearchPanel : public QWidget {
     QSize sizeHint() const override { return {1000, 600}; }
     QSize minimumSizeHint() const override { return {640, 350}; }
     int heightForWidth(int) const override { return minimumSizeHint().height(); }
+
+  signals:
+    void disk_cleanup_finished(bool success);
 
   private:
     void update_journey();
@@ -201,6 +207,7 @@ class ResearchPanel : public QWidget {
         HistoryDiskCatalog catalog;
         std::optional<HistoryDataset> opened;
         QString message;
+        bool success = false;
     };
     QFutureWatcher<DiskReply> *disk_worker_ = nullptr;
     std::shared_ptr<std::atomic<bool>> disk_cancel_;

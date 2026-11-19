@@ -132,20 +132,29 @@ HistoryDataset read_file(const QString &directory, const QString &name, const st
 void quota_check(qint64 quota) {
     check(quota >= HistoryDiskCache::file_limit && quota <= HistoryDiskCache::default_quota, "Cache quota");
 }
-void prune(const QString &directory, qint64 quota, const QString &replacement, qint64 incoming,
-           const std::atomic<bool> &cancel) {
+QStringList eviction_plan(const QString &directory, qint64 quota, const QString &replacement,
+                          qint64 incoming, const std::atomic<bool> &cancel) {
     quota_check(quota);
-    auto entries = files(directory, cancel);
+    const auto entries = files(directory, cancel);
     qint64 bytes = incoming;
     int count = incoming > 0 ? 1 : 0;
-    for (const auto &f : entries) if (f.fileName() != replacement) { bytes += f.size(); ++count; }
-    for (const auto &f : entries) {
-        if (bytes <= quota && count <= HistoryDiskCache::entry_limit) break;
-        if (f.fileName() == replacement) continue;
-        checkpoint(cancel);
-        check(QFile::remove(f.filePath()), "Cannot evict cache file");
-        bytes -= f.size(); --count;
+    for (const auto &file : entries) {
+        if (file.fileName() == replacement)
+            continue;
+        bytes += file.size();
+        ++count;
     }
+    QStringList victims;
+    for (const auto &file : entries) {
+        if (bytes <= quota && count <= HistoryDiskCache::entry_limit)
+            break;
+        if (file.fileName() == replacement)
+            continue;
+        victims.push_back(file.filePath());
+        bytes -= file.size();
+        --count;
+    }
+    return victims;
 }
 void lock(QLockFile &guard, const std::atomic<bool> &cancel) {
     checkpoint(cancel);
@@ -222,25 +231,34 @@ void HistoryDiskCache::write(const QString &directory, const HistoryDataset &set
     check(!QFileInfo(QDir(directory).filePath(name)).isSymLink(), "Cache target is a symlink");
     QSaveFile file(QDir(directory).filePath(name));
     check(file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size(), "Cannot stage cache file");
-    prune(directory, quota, name, bytes.size(), cancel);
+    const auto victims = eviction_plan(directory, quota, name, bytes.size(), cancel);
     checkpoint(cancel);
     check(file.commit(), "Cannot commit cache file");
+    // Once the new file is durable enough for QSaveFile to commit, finish enforcing the quota.
+    for (const auto &path : victims)
+        check(QFile::remove(path), "New cache file committed but quota cleanup failed");
 }
 void HistoryDiskCache::trim(const QString &directory, qint64 quota, const std::atomic<bool> &cancel) {
     quota_check(quota); checkpoint(cancel);
     if (!QFileInfo::exists(directory)) return;
     check(!QFileInfo(directory).isSymLink(), "Cache directory must not be a symlink");
     QLockFile guard(QDir(directory).filePath("history-cache.lock")); lock(guard, cancel);
-    prune(directory, quota, {}, 0, cancel);
+    for (const auto &path : eviction_plan(directory, quota, {}, 0, cancel)) {
+        checkpoint(cancel);
+        check(QFile::remove(path), "Cannot evict cache file");
+    }
 }
 void HistoryDiskCache::clear(const QString &directory, const std::atomic<bool> &cancel) {
     checkpoint(cancel);
     if (!QFileInfo::exists(directory)) return;
     check(!QFileInfo(directory).isSymLink(), "Cache directory must not be a symlink");
     QLockFile guard(QDir(directory).filePath("history-cache.lock")); lock(guard, cancel);
-    for (const auto &file : files(directory, cancel)) {
+    QDirIterator it(directory, {"qpl-history-*.json"}, QDir::Files | QDir::Hidden | QDir::System);
+    while (it.hasNext()) {
         checkpoint(cancel);
-        check(QFile::remove(file.filePath()), "Cannot remove cache file");
+        const auto path = it.next();
+        if (managed_name(it.fileName()))
+            check(QFile::remove(path), "Cannot remove cache file");
     }
 }
 } // namespace live

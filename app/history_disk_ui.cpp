@@ -53,6 +53,7 @@ void ResearchPanel::setup_disk_cache(QVBoxLayout *layout) {
             disk_operation(4);
             return;
         }
+        const bool cleared = disk_task_operation_ == 4;
         const auto result = disk_worker_->result();
         if (!disk_cancel_->load()) {
             const QSignalBlocker blocker(disk_sets_);
@@ -86,6 +87,8 @@ void ResearchPanel::setup_disk_cache(QVBoxLayout *layout) {
             disk_status_->setText(QStringLiteral("Операция отменена. Выключение не удаляет уже сохранённые файлы.\n") + disk_directory_);
         }
         refresh_disk_controls();
+        if (cleared)
+            emit disk_cleanup_finished(result.success);
     });
     connect(disk_enabled_, &QCheckBox::toggled, this, [this](bool on) {
         if (on) disk_operation(0);
@@ -112,6 +115,7 @@ void ResearchPanel::refresh_disk_controls() {
     disk_save_->setEnabled(enabled && study_idle && history_sets_->currentIndex() >= 0);
     disk_open_->setEnabled(enabled && study_idle && disk_sets_->currentIndex() >= 0);
     disk_refresh_->setEnabled(enabled); disk_trim_->setEnabled(enabled);
+    disk_enabled_->setEnabled(!disk_cleanup_pending());
     disk_clear_->setEnabled(idle); disk_quota_->setEnabled(enabled); disk_sets_->setEnabled(enabled);
 }
 void ResearchPanel::disk_operation(int operation) {
@@ -137,14 +141,17 @@ void ResearchPanel::disk_operation(int operation) {
             if (operation == 2) reply.opened = HistoryDiskCache::read(directory, file, *cancel);
             if (operation == 3) HistoryDiskCache::trim(directory, quota, *cancel);
             if (operation == 4) HistoryDiskCache::clear(directory, *cancel);
-            reply.catalog = HistoryDiskCache::catalog(directory, *cancel);
+            else reply.catalog = HistoryDiskCache::catalog(directory, *cancel);
+            reply.success = true;
             reply.message = operation == 1 ? QStringLiteral("Набор сохранён. Старейшие файлы вытесняются по лимиту.")
                 : operation == 2 ? QStringLiteral("Локальные свечи проверены по схеме и SHA-256. Сеть не проверялась.")
                 : operation == 3 ? QStringLiteral("Лимит применён; старейшие файлы удалены при необходимости.")
                 : operation == 4 ? QStringLiteral("Дисковый кэш очищен.") : QStringLiteral("Список прочитан с диска.");
         } catch (const std::exception &) {
             reply.opened.reset();
-            reply.message = QStringLiteral("Операция не завершена: файл повреждён, кэш занят, превышен лимит или нет доступа к папке. Исследовательские данные не заменены.");
+            reply.message = operation == 4
+                ? QStringLiteral("Не удалось полностью очистить дисковый кэш. Проверьте доступ к папке и повторите.")
+                : QStringLiteral("Операция не завершена: файл повреждён, кэш занят, превышен лимит или нет доступа к папке. Исследовательские данные не заменены.");
         }
         return reply;
     }));
@@ -154,10 +161,12 @@ void ResearchPanel::reset_disk_cache() {
     const QSignalBlocker blocker(disk_enabled_);
     disk_enabled_->setChecked(false);
     disk_sets_->clear();
+    if (disk_cleanup_pending()) return;
     if (disk_cancel_) disk_cancel_->store(true);
     // A pending writer must finish/cancel before the clearing task starts.
     if (disk_busy_) disk_clear_pending_ = true;
     else disk_operation(4);
+    refresh_disk_controls();
 }
 bool ResearchPanel::disk_cache_test() {
     QTemporaryDir directory;
