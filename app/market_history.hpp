@@ -4,6 +4,7 @@
 #include <QMap>
 #include <QPointer>
 #include <QVector>
+#include <algorithm>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -86,6 +87,8 @@ class MarketHistory : public QObject {
     HistorySetInfo current_info() const { return current_info_; }
     void clear();
     bool busy() const { return active_; }
+    /** Remaining Retry-After pause for this provider, in milliseconds. */
+    qint64 retry_delay_ms() const { return std::max<qint64>(0, resume_ms_ - now_ms()); }
   signals:
     void history_changed();
     void state_message(const QString &text);

@@ -9,6 +9,7 @@
 #include "quant/robustness.hpp"
 #include "research_snapshot.hpp"
 #include "visual_chart.hpp"
+#include <QSet>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDateEdit>
@@ -192,6 +193,29 @@ class ResearchPanel : public QWidget {
     quant::RuleGroup ui_rules(const std::vector<RuleUi> &controls, bool all, bool custom) const;
     quant::SimConfig settings() const;
     void load_next();
+    void schedule_history_next(int delay_ms);
+    void finish_history_load(bool interrupted);
+    void update_history_queue();
+    void setup_calendar();
+    void start_calendar();
+    void calendar_page(int offset, int page, quint64 generation);
+    void finish_calendar(const QString &error = {});
+    void cancel_calendar();
+    QPointer<QNetworkReply> calendar_reply_;
+    QUrl calendar_url_{"https://iss.moex.com/iss/calendars/stock.json"};
+    QDate calendar_from_, calendar_till_;
+    QMap<QDate, int> calendar_days_;
+    QSet<QDate> candle_days_;
+    QLabel *calendar_status_ = nullptr;
+    QPushButton *calendar_check_ = nullptr;
+    qint64 calendar_retry_until_ = 0;
+    quint64 calendar_generation_ = 0;
+    bool calendar_loading_ = false;
+    bool history_queue_active_ = false, history_queue_retried_ = false;
+    QDate history_queue_from_, history_queue_till_;
+    int history_queue_preset_ = 1;
+    QStringList history_queue_results_;
+    QLabel *history_queue_status_ = nullptr;
     void begin_history_load(bool force = false);
     void setup_history_manager();
     void refresh_history_manager();

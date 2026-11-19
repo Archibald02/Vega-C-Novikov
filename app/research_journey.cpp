@@ -26,7 +26,9 @@ void ResearchPanel::update_journey() {
     const bool ready = size >= 40 && !source_dirty_ && !loading_;
     calculate_->setEnabled(ready && !busy);
     calculate_->setText(result_current_ ? QStringLiteral("Пересчитать") : QStringLiteral("Рассчитать"));
-    cancel_button_->setEnabled(busy);
+    cancel_button_->setEnabled(busy || calendar_loading_);
+    calendar_check_->setEnabled(!busy && !calendar_loading_ && !synthetic_ && !local_project_ &&
+                                !source_dirty_ && bars.size() >= 2);
     symbols_->setEnabled(!loading_);
     period_->setEnabled(!loading_);
     custom_dates_->setEnabled(!loading_);

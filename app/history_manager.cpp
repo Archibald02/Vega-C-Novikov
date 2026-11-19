@@ -49,6 +49,17 @@ void ResearchPanel::begin_history_load(bool force) {
     load_->setEnabled(false);
     period_->setEnabled(false);
     request_index_ = 0;
+    history_queue_active_ = true;
+    history_queue_retried_ = false;
+    history_queue_results_.clear();
+    for (qsizetype i = 0; i < requested_.size(); ++i)
+        history_queue_results_ << QStringLiteral("в очереди");
+    history_queue_preset_ = period_->currentIndex();
+    const auto today = QDateTime::currentDateTimeUtc().toTimeZone(QTimeZone("Europe/Moscow")).date();
+    const int days = history_queue_preset_ == 0 ? 90 : history_queue_preset_ == 1 ? 365 : 7;
+    history_queue_from_ = custom_dates_->isChecked() ? from_->date() : today.addDays(-days);
+    history_queue_till_ = custom_dates_->isChecked() ? till_->date() : today;
+    update_history_queue();
     refresh_history_manager();
     update_journey();
     load_next();
@@ -79,6 +90,8 @@ void ResearchPanel::prepare_history_set(const QString &symbol, QDate from, QDate
     synthetic_ = false;
     local_project_ = false;
     source_dirty_ = false;
+    history_queue_results_.clear();
+    update_history_queue();
     requested_ = QStringList{symbol};
     request_index_ = 0;
     loading_ = true;
@@ -447,6 +460,9 @@ bool ResearchPanel::history_manager_test() {
         return false;
     int requests = 0;
     bool corrected = false;
+    int calendar_requests = 0;
+    QStringList queue_requests;
+    bool exercise_queue = false;
     connect(&server, &QTcpServer::newConnection, &server, [&] {
         while (auto *socket = server.nextPendingConnection()) {
             auto bytes = std::make_shared<QByteArray>();
@@ -457,10 +473,41 @@ bool ResearchPanel::history_manager_test() {
                 if (*done || !bytes->contains("\r\n\r\n"))
                     return;
                 *done = true;
-                ++requests;
                 QJsonArray rows;
                 const auto path = QString::fromLatin1(bytes->split(' ').value(1));
                 const QUrlQuery query(QUrl{path});
+                auto respond = [socket](const QByteArray &status, const QByteArray &headers,
+                                       const QByteArray &body) {
+                    socket->write("HTTP/1.1 " + status + "\r\nContent-Length: " +
+                                  QByteArray::number(body.size()) + "\r\n" + headers +
+                                  "Connection: close\r\n\r\n" + body);
+                    socket->disconnectFromHost();
+                };
+                if (path.startsWith("/calendar?")) {
+                    ++calendar_requests;
+                    if (query.queryItemValue("start") == "0")
+                        rows.append(QJsonArray{"2024-01-01", 1});
+                    else if (query.queryItemValue("start") == "1") {
+                        rows.append(QJsonArray{"2024-02-10", 0});
+                        rows.append(QJsonArray{"2024-02-11", 1});
+                        rows.append(QJsonArray{"2024-02-12", QJsonValue::Null});
+                    }
+                    respond("200 OK", {}, QJsonDocument(QJsonObject{{"off_days", QJsonObject{
+                        {"columns", QJsonArray{"tradedate", "is_traded"}}, {"data", rows}}}}).toJson());
+                    return;
+                }
+                ++requests;
+                if (exercise_queue) {
+                    queue_requests << QUrl(path).path().section('/', 1, 1);
+                    if (path.startsWith("/GAZP/")) {
+                        respond("503 Service Unavailable", {}, "{}");
+                        return;
+                    }
+                    if (path.startsWith("/LKOH/")) {
+                        respond("429 Too Many Requests", "Retry-After: 7\r\n", "{}");
+                        return;
+                    }
+                }
                 const auto from = QDate::fromString(query.queryItemValue("from"), Qt::ISODate),
                            till = QDate::fromString(query.queryItemValue("till"), Qt::ISODate);
                 for (int i = -2; i < 42; ++i) {
@@ -476,9 +523,7 @@ bool ResearchPanel::history_manager_test() {
                                                                                    "low", "close", "volume"}},
                                                             {"data", rows}}}})
                         .toJson();
-                socket->write("HTTP/1.1 200 OK\r\nContent-Length: " + QByteArray::number(body.size()) +
-                              "\r\nConnection: close\r\n\r\n" + body);
-                socket->disconnectFromHost();
+                respond("200 OK", {}, body);
             });
         }
     });
@@ -563,11 +608,44 @@ bool ResearchPanel::history_manager_test() {
     if (requests != 4 || temporary.loader_.current_info().archived ||
         temporary.loader_.current_info().revision != repaired.revision)
         return false;
-    if (!temporary.disk_cache_test() || requests != 4) return false;
+    auto wait_for = [this](auto condition) {
+        QEventLoop wait;
+        QTimer poll;
+        connect(&poll, &QTimer::timeout, &wait, [&] {
+            if (condition())
+                wait.quit();
+        });
+        poll.start(10);
+        QTimer::singleShot(5000, &wait, &QEventLoop::quit);
+        wait.exec();
+        return condition();
+    };
+    temporary.calendar_url_ = QUrl(QString("http://127.0.0.1:%1/calendar").arg(server.serverPort()));
+    temporary.calendar_check_->click();
+    if (!wait_for([&] { return !temporary.calendar_loading_; }) || calendar_requests != 3 ||
+        !temporary.calendar_status_->text().contains("2024-02-11") ||
+        temporary.calendar_status_->text().contains("2024-02-10") ||
+        !temporary.calendar_status_->text().contains(QStringLiteral("Неторговых: 1")) ||
+        !temporary.calendar_status_->text().contains(QStringLiteral("Торговых дней без свечей: 1")))
+        return false;
+    if (!temporary.disk_cache_test() || requests != 4)
+        return false;
     const bool cleared = temporary.loader_.datasets().isEmpty() &&
                          !temporary.loader_.checkpoint().available && temporary.history_sets_->count() == 0 &&
                          temporary.history_origins_.isEmpty();
     if (!cleared)
+        return false;
+    exercise_queue = true;
+    temporary.symbols_->setText("SBER, GAZP, LKOH, VTBR");
+    temporary.begin_history_load(true);
+    if (!wait_for([&] { return temporary.history_queue_retried_; }) ||
+        queue_requests != QStringList{"SBER", "GAZP", "LKOH"} ||
+        temporary.loader_.retry_delay_ms() <= 0 ||
+        !temporary.history_queue_results_.value(1).contains(QStringLiteral("ошибка")))
+        return false;
+    temporary.cancel_button_->click();
+    if (temporary.loading_ || temporary.selected_->count() != 1 || temporary.selected_->currentText() != "SBER" ||
+        temporary.history_queue_results_.value(3) != QStringLiteral("отменено"))
         return false;
     tabs_->setCurrentIndex(6);
     if (auto *button = findChild<QToolButton *>("historyManagerToggle"))

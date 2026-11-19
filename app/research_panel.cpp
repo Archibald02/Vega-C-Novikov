@@ -354,6 +354,9 @@ ResearchPanel::ResearchPanel(QWidget *parent, const QUrl &history_base)
     actions->addWidget(demo_button);
     actions->addStretch();
     data_layout_->addLayout(actions);
+    history_queue_status_ = text(QStringLiteral("Очередь следует порядку тикеров в поле выше."));
+    history_queue_status_->setAccessibleName(QStringLiteral("Ход загрузки истории"));
+    data_layout_->addWidget(history_queue_status_);
     data_layout_->addWidget(
         text(QStringLiteral("MOEX — официальные данные с задержкой, без регистрации. ДЕМО — вымышленные "
                             "цены. До 6 акций × 5000 свечей; незавершённые свечи исключаются.")));
@@ -382,6 +385,7 @@ ResearchPanel::ResearchPanel(QWidget *parent, const QUrl &history_base)
     live_quality_ = text(QStringLiteral(
         "Поток котировок — отдельный источник, подключать его для исследования не требуется."));
     quality_layout_->addWidget(quality_);
+    setup_calendar();
     auto *technical = new QWidget;
     auto *technical_layout = new QVBoxLayout(technical);
     technical_layout->addWidget(live_quality_);
@@ -461,7 +465,12 @@ ResearchPanel::ResearchPanel(QWidget *parent, const QUrl &history_base)
     });
     connect(load_, &QPushButton::clicked, this, [this] { begin_history_load(); });
     connect(cancel, &QPushButton::clicked, this, [this] {
+        const bool queue = history_queue_active_;
         cancel_work();
+        if (queue) {
+            finish_history_load(true);
+            return;
+        }
         status_->setText(
             QStringLiteral("Работа отменена. Ранее показанные результаты относятся к предыдущему расчёту."));
     });
@@ -526,7 +535,7 @@ ResearchPanel::ResearchPanel(QWidget *parent, const QUrl &history_base)
                 diagnostics_ << history_origins_[symbol];
                 data_[symbol] = std::move(accepted);
                 diagnostics_ << QStringLiteral(
-                                    "%1: принято %2, незавершённых исключено %3, календарных разрывов %4")
+                                    "%1: принято %2, незавершённых исключено %3, интервалов длиннее шага %4")
                                     .arg(symbol)
                                     .arg(data_[symbol].size())
                                     .arg(incomplete)
@@ -538,15 +547,43 @@ ResearchPanel::ResearchPanel(QWidget *parent, const QUrl &history_base)
                                                                      data_[symbol].back().end) /
                                                  3600000.0,
                                              0, 'f', 1);
+                if (history_queue_active_) {
+                    history_queue_results_[request_index_] =
+                        QStringLiteral("%1 свечей").arg(data_[symbol].size());
+                    history_queue_retried_ = false;
+                }
                 ++request_index_;
-                load_next();
+                if (history_queue_active_)
+                    schedule_history_next(150);
+                else
+                    load_next();
             });
     connect(&loader_, &MarketHistory::failed, this, [this](const QString &error) {
         if (!loading_)
             return;
         diagnostics_ << requested_.value(request_index_) + ": " + error;
+        if (history_queue_active_) {
+            const auto pause = loader_.retry_delay_ms();
+            if (pause > 0) {
+                if (history_queue_retried_) {
+                    finish_history_load(true);
+                    status_->setText(QStringLiteral("MOEX повторно ограничила запросы. Очередь остановлена."));
+                    return;
+                }
+                history_queue_retried_ = true;
+                history_queue_results_[request_index_] =
+                    QStringLiteral("повтор после паузы %1 с").arg((pause + 999) / 1000);
+                schedule_history_next(static_cast<int>(pause) + 100);
+                return;
+            }
+            history_queue_results_[request_index_] = QStringLiteral("ошибка");
+            history_queue_retried_ = false;
+        }
         ++request_index_;
-        load_next();
+        if (history_queue_active_)
+            schedule_history_next(150);
+        else
+            load_next();
     });
     auto dirty = [this] {
         if (disk_cancel_ && disk_task_operation_ == 2) disk_cancel_->store(true);
@@ -570,6 +607,7 @@ ResearchPanel::ResearchPanel(QWidget *parent, const QUrl &history_base)
         if (w != selected_ && w != period_ && w != distribution_mode_ && w != history_sets_)
             connect(w, &QComboBox::currentIndexChanged, this, dirty);
     auto source_changed = [this, dirty] {
+        cancel_calendar();
         source_dirty_ = !data_.empty();
         dirty();
         status_->setText(QStringLiteral("Параметры загрузки изменены. Нажмите «Загрузить свечи MOEX», чтобы "
@@ -620,6 +658,13 @@ void ResearchPanel::set_feed_quality(const QString &value) {
         live_quality_->setText(value);
 }
 void ResearchPanel::cancel_work() {
+    if (history_queue_active_) {
+        for (int i = request_index_; i < history_queue_results_.size(); ++i)
+            history_queue_results_[i] = QStringLiteral("отменено");
+        history_queue_active_ = false;
+        update_history_queue();
+    }
+    cancel_calendar();
     if (disk_cancel_ && disk_task_operation_ != 4) disk_cancel_->store(true);
     if (snapshot_cancel_)
         snapshot_cancel_->store(true);
@@ -648,6 +693,8 @@ void ResearchPanel::cancel_work() {
 }
 void ResearchPanel::clear_private_state() {
     cancel_work();
+    history_queue_results_.clear();
+    update_history_queue();
     history_origins_.clear();
     data_.clear();
     runs_.clear();
@@ -719,36 +766,64 @@ void ResearchPanel::clear_private_state() {
     reset_disk_cache();
     update_journey();
 }
+void ResearchPanel::update_history_queue() {
+    QStringList rows;
+    for (int i = 0; i < history_queue_results_.size(); ++i)
+        rows << requested_.value(i) + QStringLiteral(" — ") + history_queue_results_[i];
+    history_queue_status_->setText(rows.isEmpty()
+        ? QStringLiteral("Очередь следует порядку тикеров в поле выше.")
+        : QStringLiteral("Очередь: ") + rows.join(QStringLiteral(" · ")));
+}
+void ResearchPanel::schedule_history_next(int delay_ms) {
+    update_history_queue();
+    const auto generation = study_generation_;
+    QTimer::singleShot(delay_ms, Qt::PreciseTimer, this, [this, generation] {
+        if (loading_ && history_queue_active_ && generation == study_generation_)
+            load_next();
+    });
+}
 void ResearchPanel::load_next() {
-    if (request_index_ < requested_.size()) {
-        status_->setText(QStringLiteral("MOEX ISS: %1 • запрос %2/%3")
-                             .arg(requested_[request_index_])
-                             .arg(request_index_ + 1)
-                             .arg(requested_.size()));
-        if (custom_dates_->isChecked())
-            loader_.load_range(requested_[request_index_], from_->date(), till_->date(),
-                               period_->currentIndex() == 2 ? 60 : 24, force_history_);
-        else
-            loader_.load(requested_[request_index_], period_->currentIndex(), force_history_);
+    if (history_queue_active_ && request_index_ < requested_.size()) {
+        history_queue_results_[request_index_] = QStringLiteral("загрузка");
+        update_history_queue();
+        const auto preset = history_queue_preset_;
+        loader_.load_range(requested_[request_index_], history_queue_from_, history_queue_till_,
+                           preset == 2 ? 60 : 24, force_history_, preset);
         return;
     }
+    finish_history_load(false);
+}
+void ResearchPanel::finish_history_load(bool interrupted) {
+    if (interrupted && history_queue_active_) {
+        for (int i = request_index_; i < history_queue_results_.size(); ++i)
+            history_queue_results_[i] = QStringLiteral("остановлено");
+    }
+    history_queue_active_ = false;
+    update_history_queue();
     loading_ = false;
     source_dirty_ = false;
     load_->setEnabled(true);
     period_->setEnabled(true);
-    for (const auto &kv : data_)
-        if (kv.second.size() >= 3)
-            selected_->addItem(kv.first);
-    if (selected_->count() > 0)
-        selected_->setCurrentIndex(0);
+    {
+        const QSignalBlocker blocker(selected_);
+        selected_->clear();
+        for (const auto &symbol : requested_)
+            if (const auto it = data_.find(symbol); it != data_.end() && it->second.size() >= 3)
+                selected_->addItem(symbol);
+    }
     quality_->setText(diagnostics_.join('\n'));
-    if (!reuse_history_)
+    if (!reuse_history_ && !interrupted)
         catalog_.load();
     force_history_ = reuse_history_ = false;
     refresh_history_manager();
     preflight();
     update_journey();
-    status_->setText(QStringLiteral("История готова. Выберите инструмент и нажмите расчёт. Незавершённые "
+    if (interrupted)
+        status_->setText(QStringLiteral("Очередь остановлена. Завершённые наборы доступны для анализа."));
+    else if (selected_->count() == 0)
+        status_->setText(QStringLiteral("Нет наборов для анализа. Подробности — на шаге «Качество»."));
+    else
+        status_->setText(QStringLiteral("История готова. Выберите инструмент и нажмите расчёт. Незавершённые "
                                     "свечи исключены; происхождение и возраст — в качестве данных."));
 }
 QWidget *ResearchPanel::analytics_page() {
