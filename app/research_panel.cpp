@@ -810,6 +810,8 @@ void ResearchPanel::finish_history_load(bool interrupted) {
         for (const auto &symbol : requested_)
             if (const auto it = data_.find(symbol); it != data_.end() && it->second.size() >= 3)
                 selected_->addItem(symbol);
+        if (selected_->count() > 0)
+            selected_->setCurrentIndex(0);
     }
     quality_->setText(diagnostics_.join('\n'));
     if (!reuse_history_ && !interrupted)

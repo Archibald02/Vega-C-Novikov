@@ -626,8 +626,11 @@ bool ResearchPanel::history_manager_test() {
         !temporary.calendar_status_->text().contains("2024-02-11") ||
         temporary.calendar_status_->text().contains("2024-02-10") ||
         !temporary.calendar_status_->text().contains(QStringLiteral("Неторговых: 1")) ||
-        !temporary.calendar_status_->text().contains(QStringLiteral("Торговых дней без свечей: 1")))
+        !temporary.calendar_status_->text().contains(QStringLiteral("Торговых дней без свечей: 1"))) {
+        qWarning("Calendar fixture: %d requests", calendar_requests);
+        qWarning("%s", qPrintable(temporary.calendar_status_->text()));
         return false;
+    }
     if (!temporary.disk_cache_test() || requests != 4)
         return false;
     const bool cleared = temporary.loader_.datasets().isEmpty() &&
@@ -641,8 +644,10 @@ bool ResearchPanel::history_manager_test() {
     if (!wait_for([&] { return temporary.history_queue_retried_; }) ||
         queue_requests != QStringList{"SBER", "GAZP", "LKOH"} ||
         temporary.loader_.retry_delay_ms() <= 0 ||
-        !temporary.history_queue_results_.value(1).contains(QStringLiteral("ошибка")))
+        !temporary.history_queue_results_.value(1).contains(QStringLiteral("ошибка"))) {
+        qWarning("History queue fixture: %s", qPrintable(queue_requests.join(", ")));
         return false;
+    }
     temporary.cancel_button_->click();
     if (temporary.loading_ || temporary.selected_->count() != 1 || temporary.selected_->currentText() != "SBER" ||
         temporary.history_queue_results_.value(3) != QStringLiteral("отменено"))
