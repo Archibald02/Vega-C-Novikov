@@ -500,7 +500,7 @@ ResearchPanel::ResearchPanel(QWidget *parent, const QUrl &history_base)
                         {b.time_ms, end, b.open, b.high, b.low, b.close, b.volume, start.offsetFromUtc()});
                 }
                 const auto info = loader_.current_info();
-                if(!info.from_disk && history_sets_ && history_sets_->findData(info.key)>=0)
+                if(!info.from_disk && !info.archived && history_sets_ && history_sets_->findData(info.key)>=0)
                     history_sets_->setCurrentIndex(history_sets_->findData(info.key));
                 history_origins_[symbol] =
                     QStringLiteral("%1; ред. %2; SHA %3; получено %4%5")
@@ -567,7 +567,7 @@ ResearchPanel::ResearchPanel(QWidget *parent, const QUrl &history_base)
         if (w != expert_ && w != save_cash_ && w != save_account_ && w != disk_enabled_)
             connect(w, &QCheckBox::toggled, this, dirty);
     for (auto *w : findChildren<QComboBox *>())
-        if (w != selected_ && w != period_ && w != distribution_mode_ && w != history_sets_ && w != disk_sets_)
+        if (w != selected_ && w != period_ && w != distribution_mode_ && w != history_sets_)
             connect(w, &QComboBox::currentIndexChanged, this, dirty);
     auto source_changed = [this, dirty] {
         source_dirty_ = !data_.empty();
@@ -1900,10 +1900,9 @@ void ResearchPanel::set_test_view(int index) {
     if(index==9) {
         tabs_->setCurrentIndex(6);
         if(auto *button=findChild<QToolButton*>("historyManagerToggle"))button->setChecked(true);
-        if(auto *button=findChild<QToolButton*>("historyArchiveToggle"))button->setChecked(true);
         if(auto *scroll=qobject_cast<QScrollArea*>(tabs_->widget(6))) {
             scroll->widget()->layout()->activate();
-            scroll->ensureWidgetVisible(history_archive_restore_, 0, 80);
+            scroll->ensureWidgetVisible(history_sets_, 0, 80);
         }
         return;
     }

@@ -91,69 +91,35 @@ void ResearchPanel::prepare_history_set(const QString &symbol, QDate from, QDate
 void ResearchPanel::setup_history_manager() {
     auto *page = new QWidget;
     auto *layout = new QVBoxLayout(page);
-    layout->addWidget(paragraph(QStringLiteral("До 8 наборов ×5000 свечей в RAM и одна "
-                                               "контрольная точка загрузки (30 минут). "
-                                               "Дисковый кэш ниже включается отдельно. Повторный выбор из "
-                                               "RAM не проверяет сеть и может "
-                                               "содержать старые данные. "
-                                               "Редакция описывает принятые свечи, не всю "
-                                               "историю биржи. Архив прежних вариантов ограничен отдельно: "
-                                               "до 2 на набор и до 8 всего, также только в RAM.")));
+    layout->addWidget(paragraph(QStringLiteral(
+        "Выберите набор и откройте его без сети. RAM — последний принятый набор в памяти, архив — "
+        "его прежняя редакция. Дисковые наборы появятся после включения кэша.")));
     history_sets_ = new QComboBox;
+    history_sets_->setAccessibleName(QStringLiteral("Каталог наборов истории"));
+    history_sets_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     layout->addWidget(history_sets_);
     history_details_ = paragraph({});
     layout->addWidget(history_details_);
     auto *row = new QHBoxLayout;
-    history_restore_ = new QPushButton(QStringLiteral("Открыть набор из RAM"));
+    history_restore_ = new QPushButton(QStringLiteral("Открыть выбранный набор без сети"));
     history_refresh_ = new QPushButton(QStringLiteral("Перепроверить весь период"));
-    auto *clear = new QPushButton(QStringLiteral("Очистить RAM-кэш и точку"));
     row->addWidget(history_restore_);
     row->addWidget(history_refresh_);
     layout->addLayout(row);
-    layout->addWidget(clear);
-    auto *archive_page = new QWidget;
-    auto *archive_layout = new QVBoxLayout(archive_page);
-    archive_layout->addWidget(paragraph(QStringLiteral(
-        "Прежние варианты выбранного набора: до 2 разных содержимых на ключ и до 8 всего ×5000 свечей. "
-        "Сохраняются только после успешного изменения того же диапазона. Архив не является свежим "
-        "ответом ISS. Открытие не заменяет актуальный RAM-набор и не запускает расчёт стратегии. "
-        "Старейшие записи удаляются по лимиту; при вытеснении набора из каталога его архив удаляется. "
-        "Удаление архива не стирает уже открытое исследование. После закрытия приложения архив исчезает.")));
-    history_archives_ = new QComboBox;
-    history_archives_->setAccessibleName(QStringLiteral("Прежние редакции выбранного набора"));
-    archive_layout->addWidget(history_archives_);
-    history_archive_details_ = paragraph({});
-    archive_layout->addWidget(history_archive_details_);
-    history_archive_restore_ = new QPushButton(QStringLiteral("Открыть прежнюю редакцию из RAM"));
-    archive_layout->addWidget(history_archive_restore_);
+    disk_save_ = new QPushButton(QStringLiteral("Сохранить выбранный RAM-набор на диск"));
+    layout->addWidget(disk_save_);
     auto *archive_buttons = new QHBoxLayout;
     history_archive_remove_ = new QPushButton(QStringLiteral("Удалить выбранную редакцию"));
     history_archive_clear_ = new QPushButton(QStringLiteral("Очистить весь архив RAM"));
     archive_buttons->addWidget(history_archive_remove_);
     archive_buttons->addWidget(history_archive_clear_);
-    archive_layout->addLayout(archive_buttons);
-    auto *archive_fold = ui::fold(QStringLiteral("Архив прежних редакций • RAM"), archive_page);
-    archive_fold->findChild<QToolButton *>()->setObjectName("historyArchiveToggle");
-    layout->addWidget(archive_fold);
-    connect(history_archives_, &QComboBox::currentIndexChanged, this, [this] { refresh_history_archive(); });
-    connect(history_archive_restore_, &QPushButton::clicked, this, [this] {
-        const auto key = history_sets_->currentData().toString();
-        const auto revision = history_archives_->currentData().toULongLong();
-        for (const auto &info : loader_.archived_datasets(key))
-            if (info.revision == revision) {
-                prepare_history_set(info.symbol, info.from, info.till, info.interval);
-                if (!loader_.restore_revision(key, revision) && loading_) {
-                    loading_ = false;
-                    load_->setEnabled(true);
-                    period_->setEnabled(true);
-                }
-                refresh_history_manager();
-                return;
-            }
-    });
+    layout->addLayout(archive_buttons);
+    auto *clear = new QPushButton(QStringLiteral("Очистить RAM и контрольную точку"));
+    layout->addWidget(clear);
     connect(history_archive_remove_, &QPushButton::clicked, this, [this] {
-        loader_.remove_revision(history_sets_->currentData().toString(),
-                                history_archives_->currentData().toULongLong());
+        const auto choice = selected_history();
+        if (choice && choice->info.archived)
+            loader_.remove_revision(choice->info.key, choice->info.revision);
     });
     connect(history_archive_clear_, &QPushButton::clicked, &loader_, &MarketHistory::clear_archive);
     auto *extend_row = new QHBoxLayout;
@@ -229,7 +195,7 @@ void ResearchPanel::setup_history_manager() {
                                                "этого есть общая очистка "
                                                "приватных данных.")));
     setup_disk_cache(layout);
-    auto *fold = ui::fold(QStringLiteral("Менеджер истории • RAM, диск и возобновление"), page);
+    auto *fold = ui::fold(QStringLiteral("Менеджер истории"), page);
     fold->findChild<QToolButton *>()->setObjectName("historyManagerToggle");
     data_layout_->addWidget(fold);
     connect(&loader_, &MarketHistory::history_changed, this, &ResearchPanel::refresh_history_manager);
@@ -239,18 +205,23 @@ void ResearchPanel::setup_history_manager() {
     });
     connect(history_sets_, &QComboBox::currentIndexChanged, this, [this] { refresh_history_manager(); });
     connect(history_restore_, &QPushButton::clicked, this, [this] {
-        const auto key = history_sets_->currentData().toString();
-        for (const auto &info : loader_.datasets())
-            if (info.key == key) {
-                prepare_history_set(info.symbol, info.from, info.till, info.interval);
-                if (!loader_.restore(key) && loading_) {
-                    loading_ = false;
-                    load_->setEnabled(true);
-                    period_->setEnabled(true);
-                }
-                refresh_history_manager();
-                return;
-            }
+        const auto choice = selected_history();
+        if (!choice)
+            return;
+        if (!choice->file.isEmpty()) {
+            disk_operation(2);
+            return;
+        }
+        const auto &info = choice->info;
+        prepare_history_set(info.symbol, info.from, info.till, info.interval);
+        const bool opened = info.archived ? loader_.restore_revision(info.key, info.revision)
+                                          : loader_.restore(info.key);
+        if (!opened && loading_) {
+            loading_ = false;
+            load_->setEnabled(true);
+            period_->setEnabled(true);
+        }
+        refresh_history_manager();
     });
     connect(history_refresh_, &QPushButton::clicked, this, [this] {
         const auto key = history_sets_->currentData().toString();
@@ -336,26 +307,54 @@ void ResearchPanel::setup_history_manager() {
     });
     refresh_history_manager();
 }
+QString ResearchPanel::HistoryChoice::id() const {
+    if (!file.isEmpty())
+        return QStringLiteral("disk:") + file;
+    if (info.archived)
+        return QStringLiteral("archive:") + info.key + ":" + QString::number(info.revision);
+    return info.key;
+}
+std::optional<ResearchPanel::HistoryChoice> ResearchPanel::selected_history() const {
+    const int index = history_sets_->currentIndex();
+    if (index < 0 || index >= history_choices_.size())
+        return std::nullopt;
+    return history_choices_[index];
+}
 void ResearchPanel::refresh_history_manager() {
     if (!history_sets_)
         return;
-    const auto key = history_sets_->currentData().toString();
+    const auto id = history_sets_->currentData().toString();
     const QSignalBlocker blocker(history_sets_);
     history_sets_->clear();
+    history_choices_.clear();
     const auto sets = loader_.datasets();
     for (const auto &info : sets)
-        history_sets_->addItem(QStringLiteral("%1 • %2—%3 • %4 • %5 свечей • ред. %6")
-                                   .arg(info.symbol, info.from.toString(Qt::ISODate),
+        history_choices_.push_back({info, {}});
+    bool has_archive = false;
+    for (const auto &info : sets)
+        for (const auto &archived : loader_.archived_datasets(info.key)) {
+            has_archive = true;
+            history_choices_.push_back({archived, {}});
+        }
+    if (disk_enabled_ && disk_enabled_->isChecked())
+        for (const auto &item : disk_catalog_.items)
+            history_choices_.push_back({item.info, item.file});
+    for (const auto &choice : history_choices_) {
+        const auto &info = choice.info;
+        const auto source = choice.is_ram() ? QStringLiteral("RAM")
+                          : info.archived ? QStringLiteral("Архив RAM") : QStringLiteral("Диск");
+        history_sets_->addItem(QStringLiteral("%1 · %2 · %3—%4 · %5 · %6 свечей · ред. %7")
+                                   .arg(source, info.symbol, info.from.toString(Qt::ISODate),
                                         info.till.toString(Qt::ISODate),
                                         info.interval == 60 ? QStringLiteral("H1") : QStringLiteral("D1"))
-                                   .arg(info.bars)
-                                   .arg(info.revision),
-                               info.key);
-    if (history_sets_->findData(key) >= 0)
-        history_sets_->setCurrentIndex(history_sets_->findData(key));
-    const int selected = history_sets_->currentIndex();
-    if (selected >= 0) {
-        const auto &info = sets[selected];
+                                   .arg(info.bars).arg(info.revision), choice.id());
+    }
+    if (const int index = history_sets_->findData(id); index >= 0)
+        history_sets_->setCurrentIndex(index);
+    const auto choice = selected_history();
+    const auto info = choice ? choice->info : HistorySetInfo{};
+    const bool ram = choice && choice->is_ram();
+    if (choice) {
         history_details_->setText(
             QStringLiteral("Собрано %1 → %2. SHA-256 %3\n%4. %5%6")
                 .arg(time_text(info.started_ms), time_text(info.fetched_ms), info.sha256,
@@ -372,24 +371,34 @@ void ResearchPanel::refresh_history_manager() {
                                                    "страницы не перепроверялись целиком. ")
                                   : QString(),
                      info.limited ? QStringLiteral("Лимит 5000: период может быть неполным.") : QString()));
+        const auto fetched = QDateTime::fromMSecsSinceEpoch(info.fetched_ms);
+        const auto seconds = fetched.secsTo(QDateTime::currentDateTimeUtc());
+        const auto age = seconds < 0 ? QStringLiteral("время получения позже системного")
+                       : seconds < 3600 ? QStringLiteral("%1 мин с получения").arg(seconds / 60)
+                       : seconds < 86400 ? QStringLiteral("%1 ч с получения").arg(seconds / 3600)
+                       : QStringLiteral("%1 дн с получения").arg(seconds / 86400);
+        QString source = ram ? QStringLiteral("RAM · свечи MOEX ISS с задержкой")
+                       : info.archived ? QStringLiteral("Архив RAM · прежняя редакция")
+                                       : QStringLiteral("Диск · локальная копия");
+        history_details_->setText(source + QStringLiteral(" · ") + age + "\n" + history_details_->text());
     } else
-        history_details_->setText(QStringLiteral("Готовых наборов в RAM нет."));
-    if (selected >= 0 && (sets[selected].extended || sets[selected].rechecked))
+        history_details_->setText(QStringLiteral("Загрузите свечи MOEX или включите дисковый кэш."));
+    if (choice && (info.extended || info.rechecked))
         history_details_->setText(
             history_details_->text() +
             QStringLiteral("\nПроверка %1 от ред. %2: %3 свечей из RAM без "
                            "перепроверки; сеть %4—%5.")
-                .arg(sets[selected].rechecked
+                .arg(info.rechecked
                          ? QStringLiteral("участка")
-                         : (sets[selected].prepended ? QStringLiteral("начала") : QStringLiteral("хвоста")))
-                .arg(sets[selected].base_revision)
-                .arg(sets[selected].reused_bars)
-                .arg(sets[selected].checked_from.toString(Qt::ISODate),
-                     sets[selected].checked_till.toString(Qt::ISODate)));
-    if (selected >= 0 && history_recheck_from_->property("baseKey").toString() != sets[selected].key) {
+                         : (info.prepended ? QStringLiteral("начала") : QStringLiteral("хвоста")))
+                .arg(info.base_revision)
+                .arg(info.reused_bars)
+                .arg(info.checked_from.toString(Qt::ISODate),
+                     info.checked_till.toString(Qt::ISODate)));
+    if (ram && history_recheck_from_->property("baseKey").toString() != info.key) {
         const QSignalBlocker a(history_recheck_from_), b(history_recheck_till_);
-        history_recheck_from_->setProperty("baseKey", sets[selected].key);
-        const auto middle = sets[selected].from.addDays(sets[selected].from.daysTo(sets[selected].till) / 2);
+        history_recheck_from_->setProperty("baseKey", info.key);
+        const auto middle = info.from.addDays(info.from.daysTo(info.till) / 2);
         history_recheck_from_->setDate(middle);
         history_recheck_till_->setDate(middle);
     }
@@ -410,56 +419,27 @@ void ResearchPanel::refresh_history_manager() {
         history_checkpoint_->setText(
             history_checkpoint_->text() +
             QStringLiteral(" Частичная загрузка: счётчик относится только к сетевой части."));
-    const bool idle = !loading_ && !loader_.busy() && (!worker_ || !worker_->isRunning());
-    history_restore_->setEnabled(idle && selected >= 0);
-    history_refresh_->setEnabled(idle && selected >= 0);
+    const bool idle = !loading_ && !loader_.busy() && !disk_busy_ &&
+                      (!worker_ || !worker_->isRunning());
+    history_sets_->setEnabled(idle && choice.has_value());
+    history_restore_->setEnabled(idle && choice.has_value());
+    history_refresh_->setEnabled(idle && ram);
     history_resume_->setEnabled(idle && c.available);
-    history_recheck_->setEnabled(idle && selected >= 0 && !sets[selected].limited &&
-                                 history_recheck_from_->date() > sets[selected].from &&
-                                 history_recheck_till_->date() < sets[selected].till &&
+    history_archive_remove_->setEnabled(idle && choice && info.archived);
+    history_archive_clear_->setEnabled(idle && has_archive);
+    for (auto *date : {history_extend_till_, history_prepend_from_, history_recheck_from_, history_recheck_till_})
+        date->setEnabled(idle && ram && !info.limited);
+    history_recheck_->setEnabled(idle && ram && !info.limited &&
+                                 history_recheck_from_->date() > info.from &&
+                                 history_recheck_till_->date() < info.till &&
                                  history_recheck_from_->date() <= history_recheck_till_->date());
-    history_prepend_->setEnabled(idle && selected >= 0 && !sets[selected].limited &&
-                                 history_prepend_from_->date() < sets[selected].from &&
-                                 history_prepend_from_->date().daysTo(sets[selected].till) <= 7305);
-    history_extend_->setEnabled(idle && selected >= 0 && !sets[selected].limited &&
-                                history_extend_till_->date() > sets[selected].till &&
-                                sets[selected].from.daysTo(history_extend_till_->date()) <= 7305);
-    refresh_history_archive();
+    history_prepend_->setEnabled(idle && ram && !info.limited &&
+                                 history_prepend_from_->date() < info.from &&
+                                 history_prepend_from_->date().daysTo(info.till) <= 7305);
+    history_extend_->setEnabled(idle && ram && !info.limited &&
+                                history_extend_till_->date() > info.till &&
+                                info.from.daysTo(history_extend_till_->date()) <= 7305);
     refresh_disk_controls();
-}
-void ResearchPanel::refresh_history_archive() {
-    if (!history_archives_)
-        return;
-    const auto revision = history_archives_->currentData().toULongLong();
-    const QSignalBlocker blocker(history_archives_);
-    history_archives_->clear();
-    const auto entries = loader_.archived_datasets(history_sets_->currentData().toString());
-    for (const auto &info : entries)
-        history_archives_->addItem(QStringLiteral("АРХИВ • ред. %1 • %2 свечей • %3")
-                                       .arg(info.revision)
-                                       .arg(info.bars)
-                                       .arg(time_text(info.fetched_ms)),
-                                   QVariant::fromValue<qulonglong>(info.revision));
-    if (history_archives_->findData(QVariant::fromValue<qulonglong>(revision)) >= 0)
-        history_archives_->setCurrentIndex(
-            history_archives_->findData(QVariant::fromValue<qulonglong>(revision)));
-    const int selected = history_archives_->currentIndex();
-    history_archive_details_->setText(
-        selected >= 0
-            ? QStringLiteral("АРХИВ RAM • %1 • %2—%3. Собрано %4 → %5. SHA-256 %6. %7")
-                  .arg(entries[selected].symbol, entries[selected].from.toString(Qt::ISODate),
-                       entries[selected].till.toString(Qt::ISODate), time_text(entries[selected].started_ms),
-                       time_text(entries[selected].fetched_ms), entries[selected].sha256,
-                       entries[selected].limited ? QStringLiteral("Лимит 5000: период может быть неполным.")
-                                                 : QStringLiteral("Сеть не перепроверяется."))
-            : QStringLiteral("Для выбранного набора прежних редакций в RAM нет."));
-    const bool idle = !loading_ && !loader_.busy() && (!worker_ || !worker_->isRunning());
-    history_archive_restore_->setEnabled(idle && selected >= 0);
-    history_archive_remove_->setEnabled(idle && selected >= 0);
-    bool any = false;
-    for (const auto &info : loader_.datasets())
-        any = any || !loader_.archived_datasets(info.key).isEmpty();
-    history_archive_clear_->setEnabled(idle && any);
 }
 bool ResearchPanel::history_manager_test() {
     QTcpServer server;
@@ -562,37 +542,41 @@ bool ResearchPanel::history_manager_test() {
         temporary.from_->date() != QDate(2023, 12, 1) || temporary.till_->date() != QDate(2024, 4, 1) ||
         !temporary.history_origins_.value("SBER").contains(QStringLiteral("участка")))
         return false;
-    if (temporary.history_archives_->count() != 1 || !temporary.history_archive_restore_->isEnabled())
+    const auto entries = temporary.loader_.archived_datasets(repaired.key);
+    if (entries.size() != 1)
         return false;
-    temporary.history_archive_restore_->click();
+    const auto archived_row = temporary.history_sets_->findData(HistoryChoice{entries.front(), {}}.id());
+    if (archived_row < 0)
+        return false;
+    temporary.history_sets_->setCurrentIndex(archived_row);
+    if (!temporary.history_restore_->isEnabled() || temporary.history_refresh_->isEnabled() ||
+        temporary.history_extend_->isEnabled())
+        return false;
+    temporary.history_restore_->click();
     if (requests != 4 || !temporary.loader_.current_info().archived ||
         temporary.loader_.current_info().revision != earlier.revision ||
-        !temporary.history_origins_.value("SBER").contains(QStringLiteral("АРХИВ")))
+        !temporary.history_origins_.value("SBER").contains(QStringLiteral("АРХИВ")) ||
+        !temporary.history_archive_remove_->isEnabled())
         return false;
+    temporary.history_sets_->setCurrentIndex(temporary.history_sets_->findData(repaired.key));
     temporary.history_restore_->click();
     if (requests != 4 || temporary.loader_.current_info().archived ||
         temporary.loader_.current_info().revision != repaired.revision)
         return false;
-    temporary.history_archive_remove_->click();
-    if (temporary.history_archives_->count() != 0 ||
-        !temporary.loader_.archived_datasets(repaired.key).isEmpty())
-        return false;
     if (!temporary.disk_cache_test() || requests != 4) return false;
     const bool cleared = temporary.loader_.datasets().isEmpty() &&
                          !temporary.loader_.checkpoint().available && temporary.history_sets_->count() == 0 &&
-                         temporary.history_origins_.isEmpty() && temporary.history_archives_->count() == 0;
+                         temporary.history_origins_.isEmpty();
     if (!cleared)
         return false;
     tabs_->setCurrentIndex(6);
     if (auto *button = findChild<QToolButton *>("historyManagerToggle"))
         button->setChecked(true);
-    if (auto *button = findChild<QToolButton *>("historyArchiveToggle"))
-        button->setChecked(true);
     if (auto *button = findChild<QToolButton *>("historyDiskToggle"))
         button->setChecked(true);
     if (auto *scroll = qobject_cast<QScrollArea *>(tabs_->widget(6))) {
         scroll->widget()->layout()->activate();
-        scroll->ensureWidgetVisible(disk_status_, 0, 0);
+        scroll->ensureWidgetVisible(history_sets_, 0, 60);
     }
     return true;
 }

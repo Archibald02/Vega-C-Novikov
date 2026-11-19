@@ -195,7 +195,15 @@ class ResearchPanel : public QWidget {
     void begin_history_load(bool force = false);
     void setup_history_manager();
     void refresh_history_manager();
-    void refresh_history_archive();
+    struct HistoryChoice {
+        HistorySetInfo info;
+        QString file;
+        QString id() const;
+        bool is_ram() const { return !info.archived && file.isEmpty(); }
+    };
+    std::optional<HistoryChoice> selected_history() const;
+    QVector<HistoryChoice> history_choices_;
+    HistoryDiskCatalog disk_catalog_;
     void prepare_history_set(const QString &symbol, QDate from, QDate till, int interval);
     bool history_manager_test();
     void setup_disk_cache(QVBoxLayout *layout);
@@ -213,18 +221,15 @@ class ResearchPanel : public QWidget {
     std::shared_ptr<std::atomic<bool>> disk_cancel_;
     QCheckBox *disk_enabled_ = nullptr;
     QSpinBox *disk_quota_ = nullptr;
-    QComboBox *disk_sets_ = nullptr;
     QLabel *disk_status_ = nullptr;
-    QPushButton *disk_save_ = nullptr, *disk_open_ = nullptr, *disk_refresh_ = nullptr;
+    QPushButton *disk_save_ = nullptr, *disk_refresh_ = nullptr;
     QPushButton *disk_trim_ = nullptr, *disk_clear_ = nullptr;
     QString disk_directory_;
     bool disk_busy_ = false, disk_clear_pending_ = false;
     quint64 disk_study_generation_ = 0;
     int disk_task_operation_ = 0;
 
-    QComboBox *history_archives_ = nullptr;
-    QLabel *history_archive_details_ = nullptr;
-    QPushButton *history_archive_restore_ = nullptr, *history_archive_remove_ = nullptr;
+    QPushButton *history_archive_remove_ = nullptr;
     QPushButton *history_archive_clear_ = nullptr;
     QComboBox *history_sets_ = nullptr;
     QLabel *history_details_ = nullptr, *history_checkpoint_ = nullptr;
