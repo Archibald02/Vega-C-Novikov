@@ -6,6 +6,7 @@
 
 - [Скачать готовую Windows-программу — последний выпуск](https://github.com/Archibald02/Vega-C-Novikov/releases/latest)
 - [Репозиторий](https://github.com/Archibald02/Vega-C-Novikov)
+- [История изменений всех выпусков](https://github.com/Archibald02/Vega-C-Novikov/blob/main/CHANGELOG.md)
 - [Сборка, тесты и бенчмарк в GitHub Actions](https://github.com/Archibald02/Vega-C-Novikov/actions)
 - [Документация Doxygen](https://archibald02.github.io/Vega-C-Novikov/)
 
