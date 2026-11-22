@@ -59,16 +59,19 @@ Robustness robustness(const std::vector<Bar> &bars, const SimConfig &config,
     return out;
 }
 HoldoutResult final_holdout(const std::vector<Bar> &bars, const SimConfig &config, std::size_t split,
-                            std::size_t gap) {
+                            std::size_t gap, const std::atomic<bool> *cancel) {
     validate_bars(bars);
     if (split < 60 || split >= bars.size() || gap > 100 || split + gap >= bars.size() - 9)
         throw std::invalid_argument("Holdout needs train >=60 and test >=10 after gap");
+    auto check = [&] { if (cancel && cancel->load()) throw std::runtime_error("Holdout cancelled"); };
+    check();
     std::vector<Bar> train(bars.begin(), bars.begin() + split);
     auto frozen = config;
     double best = -std::numeric_limits<double>::infinity();
     for (int fast : {5, 10, 20})
         for (int slow : {20, 40, 60})
             if (fast < slow) {
+                check();
                 auto c = config;
                 c.strategy.fast = fast;
                 c.strategy.slow = slow;
@@ -79,6 +82,7 @@ HoldoutResult final_holdout(const std::vector<Bar> &bars, const SimConfig &confi
                 }
             }
     // Gap is excluded from fitting/scoring. Its observations may warm causal features before test.
+    check();
     return {frozen, backtest(bars, frozen, split + gap), split, gap};
 }
 } // namespace quant

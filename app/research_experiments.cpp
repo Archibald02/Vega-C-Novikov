@@ -96,7 +96,7 @@ void ResearchPanel::setup_experiments(QVBoxLayout *layout) {
     layout->addLayout(buttons);
     auto *snapshot_buttons = new QHBoxLayout;
     auto *snapshot_save = new QPushButton(QStringLiteral("Снимок со свечами и капиталом…"));
-    auto *snapshot_verify = new QPushButton(QStringLiteral("Повторить бэктест снимка…"));
+    auto *snapshot_verify = new QPushButton(QStringLiteral("Повторить проверки снимка…"));
     snapshot_buttons->addWidget(snapshot_save);
     snapshot_buttons->addWidget(snapshot_verify);
     layout->addLayout(snapshot_buttons);
@@ -208,14 +208,14 @@ void ResearchPanel::snapshot_operation(bool save) {
                   QStringLiteral("Снимок содержит исходные цены, виртуальный капитал, правила и сделки"), {},
                   "Quant snapshot (*.qps.json)")
             : QFileDialog::getOpenFileName(
-                  this, QStringLiteral("Повторный бэктест снимка без сети и изменения рабочего исследования"),
+                  this, QStringLiteral("Повторить исследование без сети и изменения рабочего окна"),
                   {}, "Quant snapshot (*.qps.json)");
     if (path.isEmpty())
         return;
     snapshot_cancel_ = std::make_shared<std::atomic<bool>>(false);
     const auto cancelled = snapshot_cancel_;
     status_->setText(save ? QStringLiteral("Сохраняем снимок в фоне…")
-                          : QStringLiteral("Проверяем схему и повторяем бэктест в фоне…"));
+                          : QStringLiteral("Проверяем схему и повторяем сохранённые проверки в фоне…"));
     snapshot_worker_->setFuture(
         QtConcurrent::run([path, save, snapshot, source, name, hypothesis, cancelled] {
             try {
@@ -233,7 +233,7 @@ void ResearchPanel::snapshot_operation(bool save) {
                         return QStringLiteral("Задача отменена.");
                     }
                     return file.commit() ? QStringLiteral("Снимок сохранён локально: свечи, фактические "
-                                                          "параметры исполнения и эталон исходного бэктеста.")
+                                                          "параметры и эталоны торговых проверок завершённого исследования.")
                                          : QStringLiteral("Не удалось сохранить снимок.");
                 }
                 QFile file(path);
@@ -266,7 +266,7 @@ void ResearchPanel::compare_experiments() {
     QStringList text{
         a.label, a.source, QStringLiteral("SHA-256: ") + a.hash, a.hypothesis,
         a.snapshot
-            ? QStringLiteral("Снимок исходного бэктеста доступен для отдельного экспорта.")
+            ? QStringLiteral("Снимок завершённых торговых проверок доступен для отдельного экспорта.")
             : QStringLiteral("Свечей в этой записи нет. Журнал не является снимком для повторения расчёта.")};
     if (rows.size() == 2) {
         const auto &b = runs_[rows[1].row()];
@@ -484,7 +484,7 @@ bool ResearchPanel::experiments_test() {
     root.insert("runs", list);
     if (!reject(root))
         return false;
-    if (!saved.back().snapshot || saved.back().snapshot->bars.size() + 1 != saved.back().equity.size() ||
+    if (!saved.back().snapshot || !saved.back().snapshot->research || saved.back().snapshot->bars.size() + 1 != saved.back().equity.size() ||
         fingerprint(saved.back().snapshot->bars) != saved.back().hash)
         return false;
     const auto snapshot_bytes = encode_snapshot(*saved.back().snapshot, saved.back().source,

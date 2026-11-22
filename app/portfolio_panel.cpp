@@ -165,6 +165,10 @@ PortfolioPanel::PortfolioPanel(QWidget *parent) : QWidget(parent) {
     advanced->addRow(QStringLiteral("Учебный стоп после N закрытых свечей (0 — нет)"), manual_stop_);
     manual_metadata_ = new QCheckBox(QStringLiteral("Разрешить ручные лоты/шаги и подтвердить их проверку"));
     advanced->addRow(manual_metadata_);
+    bootstrap_enabled_ = new QCheckBox(QStringLiteral("Блочный bootstrap: 400 сценариев, блок 10, seed 42"));
+    advanced->addRow(bootstrap_enabled_);
+    bootstrap_enabled_->setToolTip(QStringLiteral("Только полный бэктест. Выбор действует в этом окне и не записывается в проект или счёт."));
+    connect(bootstrap_enabled_, &QCheckBox::toggled, this, [this] { invalidate(); });
     layout->addWidget(ui::fold(QStringLiteral("Издержки, ограничения риска и настройки SMA"), options));
     auto *run_row = new QHBoxLayout;
     run_ = new QPushButton(QStringLiteral("Рассчитать портфель"));
@@ -210,6 +214,9 @@ PortfolioPanel::PortfolioPanel(QWidget *parent) : QWidget(parent) {
     connect(equity_, &VisualChart::cursor_changed, drawdowns_, &VisualChart::set_cursor);
     connect(drawdowns_, &VisualChart::cursor_changed, equity_, &VisualChart::set_cursor);
     layout->addWidget(equity_);
+    bootstrap_status_ = ui::paragraph(QStringLiteral("Оценка неопределённости выключена."));
+    bootstrap_status_->setTextFormat(Qt::PlainText);
+    layout->addWidget(ui::fold(QStringLiteral("Неопределённость портфеля"), bootstrap_status_));
     layout->addWidget(ui::fold(QStringLiteral("Просадка портфеля"), drawdowns_));
     positions_ = table({QStringLiteral("Акция"), QStringLiteral("Акций"), QStringLiteral("Стоимость, ₽"),
                         QStringLiteral("Вес, %"), QStringLiteral("Вклад в результат, ₽"),
@@ -239,7 +246,7 @@ PortfolioPanel::PortfolioPanel(QWidget *parent) : QWidget(parent) {
                                               "мешают выходу, позиция остаётся в отчёте. Итог — оценка по "
                                               "последним закрытиям, без выдуманной "
                                               "финальной продажи. Во всех отмеченных строках применяется "
-                                              "одна пара SMA; неотмеченные строки "
+                                              "выбранный шаблон строки (общие SMA, SMA 5/20, SMA 20/60 или RSI); остальные строки "
                                               "сохраняют целевые доли. Объём торгов не ограничивает "
                                               "исполнение, биржевая очередь не "
                                               "моделируется. Индивидуальных стопов, плеча, налогов, "
@@ -362,6 +369,7 @@ void PortfolioPanel::busy(bool on) {
     for (auto *w : findChildren<QAbstractSpinBox *>())
         w->setEnabled(!on);
     manual_metadata_->setEnabled(!on);
+    bootstrap_enabled_->setEnabled(!on);
     run_->setEnabled(!on && !input_.assets.empty());
     import_->setEnabled(!on);
     demo_->setEnabled(!on);
@@ -379,6 +387,7 @@ void PortfolioPanel::invalidate() {
         return;
     replay_status_->clear();
     summary_->clear();
+    bootstrap_status_->clear();
     equity_->clear();
     drawdowns_->clear();
     positions_->setRowCount(0);
@@ -389,6 +398,7 @@ void PortfolioPanel::clear_private_state() {
     if (cancelled_)
         cancelled_->store(true);
     replay_end(false);
+    bootstrap_enabled_->setChecked(false);
     input_ = {};
     rows_.clear();
     assets_->setRowCount(0);
@@ -397,6 +407,7 @@ void PortfolioPanel::clear_private_state() {
     equity_->clear();
     drawdowns_->clear();
     summary_->clear();
+    bootstrap_status_->clear();
     source_->setText(QStringLiteral("Данные портфеля очищены."));
     status_->clear();
     capital_->setValue(100000);
@@ -715,10 +726,11 @@ void PortfolioPanel::calculate(bool prepare_replay, bool prepare_live) {
     const auto source = source_->text();
     const auto interval = input_.interval;
     const auto saved_project = project();
+    const bool bootstrap_enabled = bootstrap_enabled_->isChecked();
     busy(true);
     status_->setText(QStringLiteral("Согласуем общие интервалы и считаем единый счёт в фоне…"));
     worker_->setFuture(QtConcurrent::run([selected = std::move(selected), c, flag, source, prepare_replay,
-                                          prepare_live, interval, saved_project]() mutable {
+                                          prepare_live, interval, saved_project, bootstrap_enabled]() mutable {
         PortfolioOutcome out;
         out.source = source;
         try {
@@ -780,6 +792,8 @@ void PortfolioPanel::calculate(bool prepare_replay, bool prepare_live) {
             }
             out.result = quant::portfolio_backtest(selected, c, flag.get());
             out.baseline = quant::portfolio_baseline(std::move(selected), c, flag.get());
+            if (bootstrap_enabled && !flag->load())
+                out.bootstrap = quant::equity_bootstrap(out.result.equity, {400, 10, 42}, flag.get());
         } catch (const std::exception &) {
             out.error =
                 QStringLiteral("Расчёт не выполнен. Проверьте лоты, шаги, пределы издержек и "
@@ -792,6 +806,21 @@ void PortfolioPanel::calculate(bool prepare_replay, bool prepare_live) {
 }
 void PortfolioPanel::present(const PortfolioOutcome &out) {
     const auto &r = out.result;
+    const auto &boot = out.bootstrap;
+    bootstrap_status_->setText(boot.status == quant::BootstrapStatus::Ready
+        ? QStringLiteral("Блочный bootstrap: 400 сценариев, блок 10, seed 42. "
+                         "Квантили 5/50/95% итоговой доходности: %1 / %2 / %3%; "
+                         "максимальной просадки: %4 / %5 / %6%. "
+                         "Сценарии из доходностей общего капитала между закрытиями; начальное "
+                         "распределение до первого закрытия исключено. Это модель на одной истории, "
+                         "не прогноз и не повторное исполнение стратегий. Межсессионные переходы сохранены.")
+            .arg(n(100 * boot.returns[0]), n(100 * boot.returns[1]), n(100 * boot.returns[2]),
+                 n(100 * boot.drawdowns[0]), n(100 * boot.drawdowns[1]), n(100 * boot.drawdowns[2]))
+        : boot.status == quant::BootstrapStatus::Disabled
+            ? QStringLiteral("Не вычислялось: включите оценку неопределённости и выполните полный бэктест. "
+                             "В пошаговом/сетевом счёте оценка не обновляется.")
+            : QStringLiteral("Оценка недоступна: недостаточно доходностей, неположительный капитал "
+                             "или численный предел. Результат не заменяется нулевой оценкой."));
     double contribution = 0;
     std::size_t open = 0;
     QStringList removed, cold;
@@ -885,8 +914,10 @@ bool PortfolioPanel::self_test() {
         disconnect(c);
         return !worker_->isRunning();
     };
+    bootstrap_enabled_->setChecked(true);
     run_->click();
-    if (!wait() || positions_->rowCount() != 3 || !summary_->text().contains(QStringLiteral("ДЕМО")))
+    if (!wait() || positions_->rowCount() != 3 || !summary_->text().contains(QStringLiteral("ДЕМО")) ||
+        !bootstrap_status_->text().contains(QStringLiteral("Квантили")))
         return false;
     capital_->setValue(120000);
     if (!summary_->text().isEmpty())

@@ -2,6 +2,9 @@
 #include "quant/indicators.hpp"
 #include "quant/research.hpp"
 #include "quant/rolling.hpp"
+#include "quant/portfolio.hpp"
+#include "quant/robustness.hpp"
+#include "quant/bootstrap.hpp"
 
 #include <benchmark/benchmark.h>
 #include <cmath>
@@ -111,5 +114,56 @@ static void BM_Backtest500(benchmark::State& state) {
     }
 }
 BENCHMARK(BM_Backtest500);
+
+namespace {
+std::vector<quant::Bar> research_bars() {
+    std::vector<quant::Bar> bars;
+    for (int i = 0; i < 5000; ++i) {
+        const auto t = 1700000000000LL + i * 3600000LL;
+        const double p = 100 + 5 * std::sin(i * .1);
+        bars.push_back({t, t + 3600000, p, p + 1, p - 1, p, 10000});
+    }
+    return bars;
+}
+void BM_Research5000(benchmark::State &state) {
+    const auto bars = research_bars();
+    const quant::SimConfig config;
+    for (auto _ : state) {
+        if (state.range(0) == 0) {
+            auto r = quant::backtest(bars, config, 0, true);
+            benchmark::DoNotOptimize(r.metrics.total_return);
+        } else if (state.range(0) == 1) {
+            auto r = quant::walk_forward(bars, config);
+            benchmark::DoNotOptimize(r.compounded_return);
+        } else {
+            auto r = quant::robustness(bars, config);
+            benchmark::DoNotOptimize(r.stress.data());
+        }
+    }
+}
+void BM_Portfolio6x5000(benchmark::State &state) {
+    std::vector<quant::PortfolioAsset> assets;
+    for (int i = 0; i < 6; ++i) {
+        quant::PortfolioAsset a;
+        a.symbol = "ASSET" + std::to_string(i);
+        a.bars = research_bars(); a.weight = .1;
+        assets.push_back(std::move(a));
+    }
+    for (auto _ : state) {
+        auto r = quant::portfolio_backtest(assets, {});
+        benchmark::DoNotOptimize(r.total_return);
+    }
+}
+void BM_Bootstrap5000(benchmark::State &state) {
+    const auto simulation = quant::backtest(research_bars(), {});
+    for (auto _ : state) {
+        auto r = quant::equity_bootstrap(simulation.equity, {400, 10, 42});
+        benchmark::DoNotOptimize(r.loss_frequency);
+    }
+}
+}
+BENCHMARK(BM_Research5000)->ArgName("0=trace,1=walk,2=stress")->Arg(0)->Arg(1)->Arg(2);
+BENCHMARK(BM_Portfolio6x5000);
+BENCHMARK(BM_Bootstrap5000);
 
 BENCHMARK_MAIN();

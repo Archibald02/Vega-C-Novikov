@@ -1,6 +1,7 @@
 #pragma once
 #include "indicators.hpp"
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -247,7 +248,8 @@ struct WalkForward {
     std::vector<Fold> folds;
     double compounded_return = 0;
 };
-/** Rolling train windows, bounded 3x3 parameter grid, frozen parameters in each next test window. */
+/** Rolling train windows, bounded 3x3 parameter grid, frozen parameters in each next test window.
+ * Cancellation is checked between trials and throws instead of returning a partial study. */
 WalkForward walk_forward(const std::vector<Bar> &bars, const SimConfig &config, int train = 120,
-                         int test = 40);
+                         int test = 40, const std::atomic<bool> *cancel = nullptr);
 } // namespace quant

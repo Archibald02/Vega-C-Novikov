@@ -274,6 +274,75 @@ QJsonObject result_json(const quant::SimResult &r, bool with_partial = true, boo
     }
     return object;
 }
+void validate_checks(const ResearchChecks &r, std::size_t count) {
+    require(r.train >= 60 && r.train <= 300 && r.test >= 10 && r.test <= 100 &&
+            r.manual_attempts >= 1 && r.manual_attempts <= 1000000);
+    require(r.bootstrap_config.simulations >= 100 && r.bootstrap_config.simulations <= 1000 &&
+            r.bootstrap_config.block_length >= 1 && r.bootstrap_config.block_length <= 250);
+    require(r.holdout_gap <= 100 && (!r.holdout_split ||
+            (r.holdout_split >= 60 && r.holdout_split + r.holdout_gap + 10 <= count)));
+}
+QJsonObject check_settings(const ResearchChecks &r) {
+    return {{"train", r.train}, {"test", r.test}, {"manual_attempts", r.manual_attempts},
+            {"bootstrap_enabled", r.bootstrap_enabled},
+            {"simulations", r.bootstrap_config.simulations}, {"block", r.bootstrap_config.block_length},
+            {"seed", QString::number(r.bootstrap_config.seed)},
+            {"holdout_split", static_cast<int>(r.holdout_split)},
+            {"holdout_gap", static_cast<int>(r.holdout_gap)}};
+}
+ResearchChecks parse_check_settings(const QJsonValue &v, std::size_t count) {
+    require(v.isObject());
+    const auto o = v.toObject();
+    ResearchChecks r;
+    r.train = integer(o["train"]); r.test = integer(o["test"]);
+    r.manual_attempts = integer(o["manual_attempts"]);
+    r.bootstrap_enabled = boolean(o["bootstrap_enabled"]);
+    r.bootstrap_config.simulations = integer(o["simulations"]);
+    r.bootstrap_config.block_length = integer(o["block"]);
+    bool ok = false;
+    const auto seed = o["seed"].toString().toULongLong(&ok);
+    require(ok && seed <= UINT32_MAX && QString::number(seed) == o["seed"].toString());
+    r.bootstrap_config.seed = static_cast<std::uint32_t>(seed);
+    const auto split = integer(o["holdout_split"]), gap = integer(o["holdout_gap"]);
+    require(split >= 0 && gap >= 0);
+    r.holdout_split = static_cast<std::size_t>(split); r.holdout_gap = static_cast<std::size_t>(gap);
+    validate_checks(r, count);
+    require(check_settings(r) == o); // no silent defaults, coercion or unknown options
+    return r;
+}
+QJsonArray trials_json(const std::vector<quant::Trial> &trials) {
+    QJsonArray rows;
+    for (const auto &t : trials) {
+        quant::SimResult r; r.metrics = t.metrics;
+        rows.append(QJsonObject{{"name", QString::fromStdString(t.name)}, {"fast", t.fast},
+                                {"slow", t.slow}, {"metrics", result_json(r)}});
+    }
+    return rows;
+}
+QJsonObject checks_json(const ResearchChecks &r) {
+    QJsonArray folds, band;
+    for (const auto &f : r.walk.folds)
+        folds.append(QJsonArray{static_cast<int>(f.train_begin), static_cast<int>(f.test_begin),
+                                static_cast<int>(f.test_end), f.fast, f.slow, f.train_return, f.test_return});
+    for (const auto &b : r.bootstrap.band)
+        band.append(QJsonArray{b.observation, b.lower, b.median, b.upper, b.actual});
+    const auto &b = r.bootstrap;
+    QJsonObject o{{"baseline", result_json(r.baseline)},
+                  {"walk", QJsonObject{{"folds", folds}, {"return", r.walk.compounded_return}}},
+                  {"stability", trials_json(r.robustness.stability)},
+                  {"stress", trials_json(r.robustness.stress)}};
+    if (r.bootstrap_enabled)
+        o["bootstrap"] = QJsonObject{{"status", static_cast<int>(b.status)},
+            {"observations", b.observations},
+            {"summary", doubles({b.actual_return, b.actual_drawdown, b.loss_frequency})},
+            {"returns", doubles(std::vector<double>(b.returns.begin(), b.returns.end()))},
+            {"drawdowns", doubles(std::vector<double>(b.drawdowns.begin(), b.drawdowns.end()))},
+            {"band", band}, {"terminal_returns", doubles(b.terminal_returns)}};
+    if (r.holdout_split)
+        o["holdout"] = QJsonObject{{"frozen", config_json(r.holdout.frozen)},
+                                   {"test", result_json(r.holdout.test)}};
+    return o;
+}
 bool same(const QJsonValue &a, const QJsonValue &b) {
     if (a.type() != b.type())
         return false;
@@ -295,7 +364,8 @@ bool same(const QJsonValue &a, const QJsonValue &b) {
         if (x.keys() != y.keys())
             return false;
         for (auto i = x.begin(); i != x.end(); ++i) {
-            if (i.key() == "fills" || i.key() == "closed_trades" || i.key() == "partial_fills") {
+            if (i.key() == "fills" || i.key() == "closed_trades" || i.key() == "partial_fills" ||
+                i.key() == "status" || i.key() == "observations") {
                 if (i.value() != y.value(i.key()))
                     return false;
             } else if (!same(i.value(), y.value(i.key())))
@@ -306,6 +376,21 @@ bool same(const QJsonValue &a, const QJsonValue &b) {
     return a == b;
 }
 } // namespace
+ResearchChecks run_research_checks(const std::vector<quant::Bar> &bars, const quant::SimConfig &config,
+                                  const quant::SimResult &original, ResearchChecks r,
+                                  const std::atomic<bool> &cancelled) {
+    require(!bars.empty() && bars.size() <= 5000);
+    validate_checks(r, bars.size());
+    auto check = [&] { if (cancelled.load()) throw std::runtime_error("Research replay cancelled"); };
+    check(); r.baseline = quant::buy_hold(bars, config);
+    check(); r.walk = quant::walk_forward(bars, config, r.train, r.test, &cancelled);
+    check(); r.robustness = quant::robustness(bars, config, &cancelled);
+    check();
+    if (r.bootstrap_enabled) r.bootstrap = quant::equity_bootstrap(original.equity, r.bootstrap_config, &cancelled);
+    check();
+    if (r.holdout_split) r.holdout = quant::final_holdout(bars, config, r.holdout_split, r.holdout_gap, &cancelled);
+    check(); return r;
+}
 QByteArray encode_snapshot(const ReplaySnapshot &s, const QString &source, const QString &name,
                            const QString &hypothesis) {
     require(!s.bars.empty() && s.bars.size() <= 5000 && s.reference.journal.size() <= 10000 &&
@@ -314,7 +399,7 @@ QByteArray encode_snapshot(const ReplaySnapshot &s, const QString &source, const
     require(source.size() <= 256 && !name.isEmpty() && name.size() <= 120 && hypothesis.size() <= 2000);
     quant::validate_bars(s.bars);
     const auto bars = bars_json(s.bars);
-    const auto bytes = QJsonDocument(QJsonObject{{"format", "QuantPriceLiveSnapshot"},
+    auto root = QJsonObject{{"format", "QuantPriceLiveSnapshot"},
                                                  {"schema", 5},
                                                  {"engine", engine},
                                                  {"source", source},
@@ -323,8 +408,14 @@ QByteArray encode_snapshot(const ReplaySnapshot &s, const QString &source, const
                                                  {"bars", bars},
                                                  {"sha256", hash_bars(bars)},
                                                  {"config", config_json(s.config)},
-                                                 {"reference", result_json(s.reference)}})
-                           .toJson(QJsonDocument::Compact);
+                                                 {"reference", result_json(s.reference)}};
+    if (s.research) {
+        validate_checks(*s.research, s.bars.size());
+        root["schema"] = 6;
+        root["research"] = QJsonObject{{"settings", check_settings(*s.research)},
+                                       {"reference", checks_json(*s.research)}};
+    }
+    const auto bytes = QJsonDocument(root).toJson(QJsonDocument::Compact);
     require(bytes.size() <= snapshot_byte_limit);
     return bytes;
 }
@@ -340,9 +431,10 @@ QString verify_snapshot(const QByteArray &bytes, const std::atomic<bool> &cancel
     const bool legacy_two = root["schema"] == 2 && root["engine"] == "qpl-single-backtest-v2";
     const bool legacy_three = root["schema"] == 3 && root["engine"] == "qpl-single-backtest-v3";
     const bool legacy_four = root["schema"] == 4 && root["engine"] == "qpl-single-backtest-v4";
-    require(root.size() == 10 && root["format"] == "QuantPriceLiveSnapshot" &&
+    const bool full = root["schema"] == 6 && root["engine"] == engine;
+    require(root.size() == (full ? 11 : 10) && root["format"] == "QuantPriceLiveSnapshot" &&
             (legacy || legacy_two || legacy_three || legacy_four ||
-             (root["schema"] == 5 && root["engine"] == engine)));
+             (root["schema"] == 5 && root["engine"] == engine) || full));
     for (const auto &key : {"name", "hypothesis", "source"})
         require(root[key].isString());
     require(!root["name"].toString().isEmpty() && root["name"].toString().size() <= 120 &&
@@ -388,6 +480,26 @@ QString verify_snapshot(const QByteArray &bytes, const std::atomic<bool> &cancel
         return QStringLiteral("НЕ СОВПАЛО: эталон и повторный бэктест различаются. Проверьте "
                               "версию модели и "
                               "файл. Данные и настройки рабочего исследования не изменены.");
+    if (full) {
+        require(root["research"].isObject());
+        const auto saved = root["research"].toObject();
+        require(saved.keys() == QStringList({"reference", "settings"}) && saved["reference"].isObject());
+        auto settings = parse_check_settings(saved["settings"], bars.size());
+        if (cancelled.load()) return QStringLiteral("Проверка отменена.");
+        ResearchChecks replay;
+        try { replay = run_research_checks(bars, c, actual, settings, cancelled); }
+        catch (...) { if (cancelled.load()) return QStringLiteral("Проверка отменена."); throw; }
+        if (!same(saved["reference"], checks_json(replay)))
+            return QStringLiteral("НЕ СОВПАЛО: торговые проверки исследования отличаются от эталона.");
+        return QStringLiteral("СОВПАЛО: исходный бэктест, база, walk-forward (%1 окон), сетка (9), "
+                              "стресс (6), bootstrap: %2, holdout: %3. Ручных запусков записано: %4. "
+                              "Допуск 1e-9 относительный + 1e-7 абсолютный. Проверена согласованность "
+                              "файла, не авторство или независимость выбора стратегии.")
+            .arg(replay.walk.folds.size())
+            .arg(settings.bootstrap_enabled ? QStringLiteral("повторён") : QStringLiteral("выключен"))
+            .arg(settings.holdout_split ? QStringLiteral("повторён") : QStringLiteral("не открывался"))
+            .arg(settings.manual_attempts);
+    }
     return QStringLiteral("СОВПАЛО: %1 свечей, %2 исполнений. Капитал, просадка, метрики и журнал "
                           "воспроизведены (допуск 1e-9 относительный + 1e-7 абсолютный). Проверена "
                           "согласованность файла, не подлинность его автора. Это исходный бэктест; "

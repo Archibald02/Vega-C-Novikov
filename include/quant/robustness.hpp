@@ -20,5 +20,5 @@ struct HoldoutResult {
 };
 /** Choose SMA windows using training only, skip a temporal embargo, then evaluate once on the suffix. */
 HoldoutResult final_holdout(const std::vector<Bar> &bars, const SimConfig &config, std::size_t split,
-                            std::size_t gap = 0);
+                            std::size_t gap = 0, const std::atomic<bool> *cancel = nullptr);
 } // namespace quant
