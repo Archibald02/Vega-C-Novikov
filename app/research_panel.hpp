@@ -30,6 +30,7 @@
 #include <memory>
 namespace live {
 /** Localized model codes shared by the GUI and explicitly exported reports. */
+QString final_validation_html(const quant::HoldoutResult &result);
 QString bootstrap_description(const quant::BootstrapResult &result);
 QString execution_gate(const std::string &gate);
 QString execution_reason(const std::string &code);
@@ -68,6 +69,10 @@ class ResearchPanel : public QWidget {
     /** True while an explicitly requested disk cleanup is queued or running. */
     bool disk_cleanup_pending() const { return disk_clear_pending_ || (disk_busy_ && disk_task_operation_ == 4); }
     bool self_test();
+    /** Offline regression through the actual final-validation button and worker. */
+    bool holdout_self_test();
+    /** Generate the explicitly synthetic, frozen defense example and its replay artifacts. */
+    bool create_defense_example(const QString &directory);
     PortfolioInput portfolio_input() const;
     bool privacy_test();
     void start_online_test();
@@ -114,6 +119,7 @@ class ResearchPanel : public QWidget {
     QString fingerprint(const std::vector<quant::Bar> &bars) const;
     QString report_html(bool compact = false) const;
     void export_report(bool pdf);
+    static bool write_report(const QString &html, const QString &path, bool pdf);
     void record_run(const LabResult &result);
     void refresh_runs();
     void setup_experiments(QVBoxLayout *layout);
@@ -147,6 +153,9 @@ class ResearchPanel : public QWidget {
     QLabel *bootstrap_status_;
     VisualChart *bootstrap_chart_, *bootstrap_histogram_;
     QDoubleSpinBox *tick_;
+    QPushButton *holdout_open_ = nullptr;
+    QTableWidget *holdout_table_ = nullptr;
+    void present_holdout_table();
     QLabel *preflight_, *holdout_status_, *metadata_, *reference_status_, *release_status_;
     QTableWidget *stability_, *stress_, *runs_table_, *events_;
     VisualChart *runs_chart_;
@@ -263,7 +272,7 @@ class ResearchPanel : public QWidget {
     QDateEdit *history_recheck_from_ = nullptr, *history_recheck_till_ = nullptr;
     bool force_history_ = false, reuse_history_ = false;
     QMap<QString, QString> history_origins_;
-    void calculate();
+    bool calculate();
     void present(const LabResult &result);
     void show_distribution();
     void demo(bool hourly = false);

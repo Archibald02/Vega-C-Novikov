@@ -15,7 +15,7 @@ Robustness robustness(const std::vector<Bar> &bars, const SimConfig &config,
                       const std::atomic<bool> *cancel = nullptr);
 struct HoldoutResult {
     SimConfig frozen;
-    SimResult test;
+    SimResult test, baseline;
     std::size_t split = 0, gap = 0;
 };
 /** Choose SMA windows using training only, skip a temporal embargo, then evaluate once on the suffix. */

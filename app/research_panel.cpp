@@ -453,15 +453,34 @@ ResearchPanel::ResearchPanel(QWidget *parent, const QUrl &history_base)
         calculate_->setEnabled(true);
         refresh_history_manager();
         update_journey();
-        if (cancel_ && cancel_->load())
+        if (cancel_ && cancel_->load()) {
+            if (!holdout_key_.isEmpty()) {
+                holdout_status_->setText(QStringLiteral("Финальная проверка отменена. Новый результат не показан."));
+                holdout_key_.clear();
+                update_journey();
+            }
             return;
+        }
         const auto result = worker_->result();
         if (!result.error.isEmpty()) {
             show_result_when_ready_ = false;
             status_->setText(result.error);
+            if (!holdout_key_.isEmpty()) {
+                holdout_status_->setText(QStringLiteral("Финальный результат не показан. ") + result.error);
+                holdout_key_.clear();
+                update_journey();
+            }
             return;
         }
         last_result_ = result;
+        if (result.has_holdout && !holdout_key_.isEmpty()) {
+            const bool seen = holdout_used_.count(holdout_key_) && holdout_used_.at(holdout_key_);
+            holdout_used_[holdout_key_] = true;
+            holdout_status_->setText(seen
+                ? QStringLiteral("ПОВТОРНЫЙ ПРОСМОТР: независимость holdout утрачена.")
+                : QStringLiteral("Первый успешный просмотр финального участка; подбор только на первых 80%."));
+            holdout_key_.clear();
+        }
         present(result);
         record_run(result);
         result_current_ = true;
@@ -670,6 +689,10 @@ void ResearchPanel::set_feed_quality(const QString &value) {
         live_quality_->setText(value);
 }
 void ResearchPanel::cancel_work() {
+    if (!holdout_key_.isEmpty()) {
+        holdout_status_->setText(QStringLiteral("Финальная проверка отменена; новый результат не показан."));
+        holdout_key_.clear();
+    }
     if (history_queue_active_) {
         for (int i = request_index_; i < history_queue_results_.size(); ++i)
             history_queue_results_[i] = QStringLiteral("отменено");
@@ -715,6 +738,7 @@ void ResearchPanel::clear_private_state() {
     runs_table_->setRowCount(0);
     runs_chart_->clear();
     holdout_used_.clear();
+    holdout_table_->setRowCount(0);
     attempts_ = 0;
     events_->setRowCount(0);
     reference_status_->clear();
@@ -1371,20 +1395,21 @@ std::vector<quant::Bar> ResearchPanel::selected_bars() const {
     const auto it = data_.find(selected_->currentText());
     return it == data_.end() ? std::vector<quant::Bar>{} : it->second;
 }
-void ResearchPanel::calculate() {
+bool ResearchPanel::calculate() {
     if (disk_cancel_ && disk_task_operation_ == 2) disk_cancel_->store(true);
-    if (loading_ || worker_->isRunning() || (snapshot_worker_ && snapshot_worker_->isRunning()))
-        return;
+    if (loading_ || worker_->isRunning() || (snapshot_worker_ && snapshot_worker_->isRunning()) ||
+        (!evaluate_holdout_ && !holdout_key_.isEmpty()))
+        return false;
     if (source_dirty_) {
         status_->setText(QStringLiteral("Параметры загрузки изменены. Сначала загрузите новый диапазон."));
-        return;
+        return false;
     }
     auto bars = selected_bars();
     preflight();
     if (bars.size() < 40) {
         status_->setText(
             QStringLiteral("Нужно минимум 40 закрытых свечей. Для walk-forward — обучение + тест."));
-        return;
+        return false;
     }
     quant::SimConfig config;
     try {
@@ -1394,7 +1419,7 @@ void ResearchPanel::calculate() {
         status_->setText(QStringLiteral("Расчёт не запущен. Для старшего фильтра нужны H1, быстрая SMA "
                                         "меньше медленной. Проверьте также обычные SMA, баланс "
                                         "скобок и глубину формул до 3."));
-        return;
+        return false;
     }
     if (!synthetic_ && !manual_metadata_->isChecked()) {
         bool known = false;
@@ -1404,17 +1429,17 @@ void ResearchPanel::calculate() {
         if (!known) {
             status_->setText(QStringLiteral(
                 "Сначала загрузите лот и шаг из MOEX или явно включите ручную проверку метаданных."));
-            return;
+            return false;
         }
     }
     const bool holdout = evaluate_holdout_;
     evaluate_holdout_ = false;
     const bool reserve = reserve_->isChecked();
-    const auto split = static_cast<std::size_t>(bars.size() * .8);
+    const auto split = bars.size() * 8 / 10;
     if (reserve && !holdout)
         bars.resize(split);
     if (bars.size() < 40)
-        return;
+        return false;
     const int embargo = gap_->value();
     const bool bootstrap_enabled = bootstrap_enabled_->isChecked();
     const quant::BootstrapConfig bootstrap_config{bootstrap_simulations_->value(), bootstrap_block_->value(),
@@ -1509,6 +1534,7 @@ void ResearchPanel::calculate() {
     }));
     update_journey();
     refresh_history_manager();
+    return true;
 }
 void ResearchPanel::explain_bar(int index) {
     const auto &r = last_result_;
@@ -1765,10 +1791,10 @@ void ResearchPanel::present(const LabResult &r) {
     cost_card_->setText(fmt(m.fees + m.execution_cost, 2));
     report_->setText(
         QStringLiteral(
-            "Чистый результат: %1% • максимум просадки по закрытиям: %2% • оборот / начальный капитал: "
+            "Весь рассчитанный диапазон (не финальный тест).\nЧистый результат: %1% • максимум просадки по закрытиям: %2% • оборот / начальный капитал: "
             "%3\nИсполнений: %4 • закрытых позиций: %5 • выигрышных: %6% • profit factor: %7\nSharpe=%8 • "
             "Sortino=%9 (нулевая ставка, N=%10; 0=на свечу) • CAGR=%11% • Calmar=%12\nДержать с той же долей "
-            "капитала: %13% • деньги без процентов: 0%\nWalk-forward: %14 полных окон, составной результат "
+            "капитала на всём рассчитанном диапазоне: %13% • деньги без процентов: 0%\nWalk-forward: %14 полных окон, составной результат "
             "вне выборки: %15%\nОстановка по риску: %16 • незакрытых акций: %17. Стратегия: только long, без "
             "плеча; цены без дивидендных поправок.")
             .arg(fmt(m.total_return * 100), fmt(m.max_drawdown * 100), fmt(m.turnover))
@@ -2034,6 +2060,7 @@ bool ResearchPanel::privacy_test() {
            !attribution_status_->text().contains(QStringLiteral("TEST_PRIVATE_ATTRIBUTION"));
 }
 bool ResearchPanel::self_test() {
+    if (!holdout_self_test()) return false;
     cancel_work();
     expert_->setChecked(false);
     if (!journey_test())

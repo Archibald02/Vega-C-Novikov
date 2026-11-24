@@ -12,6 +12,10 @@
 #include <cmath>
 namespace live {
 namespace {
+const QTimeZone &moscow_zone() {
+    static const QTimeZone zone("Europe/Moscow");
+    return zone;
+}
 QByteArray page_hash(const QJsonObject &block) {
     return QCryptographicHash::hash(QJsonDocument(block).toJson(QJsonDocument::Compact),
                                     QCryptographicHash::Sha256);
@@ -67,10 +71,16 @@ QVector<Candle> parse_candles(const QJsonDocument &document) {
             return positions[index] < row.size() ? row[positions[index]] : QJsonValue();
         };
         Candle bar;
-        const auto date = QDateTime::fromString(at(0).toString(), "yyyy-MM-dd HH:mm:ss");
-        if (!date.isValid() || date.date().year() < 1990 || date.date().year() > 3000)
+        // Parse the exchange wall clock directly, without constructing a host-local QDateTime.
+        const auto stamp = at(0).toString();
+        const auto date = QDate::fromString(stamp.left(10), Qt::ISODate);
+        const auto time = QTime::fromString(stamp.mid(11), "HH:mm:ss");
+        if (stamp.size() != 19 || stamp[10] != ' ' || !date.isValid() || !time.isValid() ||
+            date.year() < 1990 || date.year() > 3000)
             continue;
-        bar.time_ms = QDateTime(date.date(), date.time(), QTimeZone("Europe/Moscow")).toMSecsSinceEpoch();
+        const QDateTime market_time(date, time, moscow_zone());
+        if (!market_time.isValid()) continue;
+        bar.time_ms = market_time.toMSecsSinceEpoch();
         double *fields[]{&bar.open, &bar.high, &bar.low, &bar.close, &bar.volume};
         bool valid = true;
         for (int i = 0; i < 5; ++i) {
@@ -119,7 +129,7 @@ void MarketHistory::load(const QString &symbol, int preset, bool force) {
         emit failed(QStringLiteral("Некорректный период."));
         return;
     }
-    const auto today = QDateTime::currentDateTimeUtc().toTimeZone(QTimeZone("Europe/Moscow")).date();
+    const auto today = QDateTime::currentDateTimeUtc().toTimeZone(moscow_zone()).date();
     const int days = preset == 0 ? 90 : preset == 1 ? 365 : 7;
     load_range(symbol, today.addDays(-days), today, preset == 2 ? 60 : 24, force, preset);
 }
@@ -312,7 +322,7 @@ void MarketHistory::page(const QString &symbol, int preset, const QString &key, 
             const auto before = accumulated_.size();
             for (const auto &bar : bars) {
                 const auto date =
-                    QDateTime::fromMSecsSinceEpoch(bar.time_ms).toTimeZone(QTimeZone("Europe/Moscow")).date();
+                    QDateTime::fromMSecsSinceEpoch(bar.time_ms, moscow_zone()).date();
                 if (date < from || date > till ||
                     (!accumulated_.isEmpty() && bar.time_ms <= accumulated_.back().time_ms)) {
                     ++rejected_;

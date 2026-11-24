@@ -10,6 +10,10 @@
 #include <stdexcept>
 namespace live {
 namespace {
+const QTimeZone &moscow_zone() {
+    static const QTimeZone zone("Europe/Moscow");
+    return zone;
+}
 constexpr auto engine = "qpl-single-backtest-v5";
 void require(bool condition) {
     if (!condition)
@@ -319,7 +323,7 @@ QJsonArray trials_json(const std::vector<quant::Trial> &trials) {
     }
     return rows;
 }
-QJsonObject checks_json(const ResearchChecks &r) {
+QJsonObject checks_json(const ResearchChecks &r, bool holdout_baseline = true) {
     QJsonArray folds, band;
     for (const auto &f : r.walk.folds)
         folds.append(QJsonArray{static_cast<int>(f.train_begin), static_cast<int>(f.test_begin),
@@ -338,9 +342,11 @@ QJsonObject checks_json(const ResearchChecks &r) {
             {"returns", doubles(std::vector<double>(b.returns.begin(), b.returns.end()))},
             {"drawdowns", doubles(std::vector<double>(b.drawdowns.begin(), b.drawdowns.end()))},
             {"band", band}, {"terminal_returns", doubles(b.terminal_returns)}};
-    if (r.holdout_split)
-        o["holdout"] = QJsonObject{{"frozen", config_json(r.holdout.frozen)},
-                                   {"test", result_json(r.holdout.test)}};
+    if (r.holdout_split) {
+        QJsonObject final{{"frozen", config_json(r.holdout.frozen)}, {"test", result_json(r.holdout.test)}};
+        if (holdout_baseline) final["baseline"] = result_json(r.holdout.baseline);
+        o["holdout"] = final;
+    }
     return o;
 }
 bool same(const QJsonValue &a, const QJsonValue &b) {
@@ -411,7 +417,7 @@ QByteArray encode_snapshot(const ReplaySnapshot &s, const QString &source, const
                                                  {"reference", result_json(s.reference)}};
     if (s.research) {
         validate_checks(*s.research, s.bars.size());
-        root["schema"] = 6;
+        root["schema"] = 7;
         root["research"] = QJsonObject{{"settings", check_settings(*s.research)},
                                        {"reference", checks_json(*s.research)}};
     }
@@ -431,7 +437,7 @@ QString verify_snapshot(const QByteArray &bytes, const std::atomic<bool> &cancel
     const bool legacy_two = root["schema"] == 2 && root["engine"] == "qpl-single-backtest-v2";
     const bool legacy_three = root["schema"] == 3 && root["engine"] == "qpl-single-backtest-v3";
     const bool legacy_four = root["schema"] == 4 && root["engine"] == "qpl-single-backtest-v4";
-    const bool full = root["schema"] == 6 && root["engine"] == engine;
+    const bool full = (root["schema"] == 6 || root["schema"] == 7) && root["engine"] == engine;
     require(root.size() == (full ? 11 : 10) && root["format"] == "QuantPriceLiveSnapshot" &&
             (legacy || legacy_two || legacy_three || legacy_four ||
              (root["schema"] == 5 && root["engine"] == engine) || full));
@@ -455,8 +461,7 @@ QString verify_snapshot(const QByteArray &bytes, const std::atomic<bool> &cancel
         const double t = a[0].toDouble(), end = a[1].toDouble();
         require(t >= 1 && t <= 32503680000000. && end >= 1 && end <= 32503852800000. && std::floor(t) == t &&
                 std::floor(end) == end);
-        const auto offset = QDateTime::fromMSecsSinceEpoch(static_cast<qint64>(t))
-                                .toTimeZone(QTimeZone("Europe/Moscow"))
+        const auto offset = QDateTime::fromMSecsSinceEpoch(static_cast<qint64>(t), moscow_zone())
                                 .offsetFromUtc();
         require(a[7].toDouble() == offset);
         bars.push_back({static_cast<qint64>(t), static_cast<qint64>(end), a[2].toDouble(), a[3].toDouble(),
@@ -489,7 +494,7 @@ QString verify_snapshot(const QByteArray &bytes, const std::atomic<bool> &cancel
         ResearchChecks replay;
         try { replay = run_research_checks(bars, c, actual, settings, cancelled); }
         catch (...) { if (cancelled.load()) return QStringLiteral("Проверка отменена."); throw; }
-        if (!same(saved["reference"], checks_json(replay)))
+        if (!same(saved["reference"], checks_json(replay, root["schema"] == 7)))
             return QStringLiteral("НЕ СОВПАЛО: торговые проверки исследования отличаются от эталона.");
         return QStringLiteral("СОВПАЛО: исходный бэктест, база, walk-forward (%1 окон), сетка (9), "
                               "стресс (6), bootstrap: %2, holdout: %3. Ручных запусков записано: %4. "
@@ -497,7 +502,7 @@ QString verify_snapshot(const QByteArray &bytes, const std::atomic<bool> &cancel
                               "файла, не авторство или независимость выбора стратегии.")
             .arg(replay.walk.folds.size())
             .arg(settings.bootstrap_enabled ? QStringLiteral("повторён") : QStringLiteral("выключен"))
-            .arg(settings.holdout_split ? QStringLiteral("повторён") : QStringLiteral("не открывался"))
+            .arg(settings.holdout_split ? (root["schema"] == 7 ? QStringLiteral("стратегия и база на одном периоде повторены") : QStringLiteral("повторён; база финального периода в старой схеме не проверялась")) : QStringLiteral("не открывался"))
             .arg(settings.manual_attempts);
     }
     return QStringLiteral("СОВПАЛО: %1 свечей, %2 исполнений. Капитал, просадка, метрики и журнал "

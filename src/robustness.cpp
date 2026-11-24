@@ -83,6 +83,18 @@ HoldoutResult final_holdout(const std::vector<Bar> &bars, const SimConfig &confi
             }
     // Gap is excluded from fitting/scoring. Its observations may warm causal features before test.
     check();
-    return {frozen, backtest(bars, frozen, split + gap), split, gap};
+    HoldoutResult result;
+    result.frozen = frozen;
+    result.split = split; result.gap = gap;
+    result.test = backtest(bars, frozen, split + gap);
+    check();
+    // The final benchmark buys at the first scored open and holds to the end.
+    // Legacy full-range comparisons keep their original behavior for snapshot replay.
+    auto baseline = frozen;
+    baseline.strategy.exit = {};
+    baseline.signal_delay = 0;
+    result.baseline = buy_hold(bars, baseline, split + gap);
+    check();
+    return result;
 }
 } // namespace quant

@@ -14,6 +14,10 @@
 #include <stdexcept>
 namespace live {
 namespace {
+const QTimeZone &moscow_zone() {
+    static const QTimeZone zone("Europe/Moscow");
+    return zone;
+}
 void require(bool ok) {
     if (!ok)
         throw std::invalid_argument("Portfolio project schema/data");
@@ -161,7 +165,7 @@ PortfolioProject parse(const QJsonValue &v, const std::atomic<bool> &cancel) {
             r.volume = number(b[6], 0, 1e18);
             r.utc_offset_seconds = integer(b[7], -86400, 86400);
             const auto offset =
-                QDateTime::fromMSecsSinceEpoch(r.time, QTimeZone("Europe/Moscow")).offsetFromUtc();
+                QDateTime::fromMSecsSinceEpoch(r.time, moscow_zone()).offsetFromUtc();
             require(r.utc_offset_seconds == offset);
             asset.bars.push_back(r);
         }
