@@ -326,8 +326,8 @@ TEST_CASE("Research snapshot repeats frozen trading checks including bootstrap a
     s.research = std::make_shared<const live::ResearchChecks>(
         live::run_research_checks(s.bars, s.config, s.reference, settings, cancel));
     auto root = QJsonDocument::fromJson(live::encode_snapshot(s, "DEMO", "Full", "hypothesis")).object();
-    REQUIRE(root["schema"] == 6);
-    CHECK(live::verify_snapshot(encode(root), cancel).contains(QStringLiteral("holdout: повторён")));
+    REQUIRE(root["schema"] == 7);
+    CHECK(live::verify_snapshot(encode(root), cancel).contains(QStringLiteral("стратегия и база на одном периоде повторены")));
     SUBCASE("changed walk, stress, baseline, bootstrap or holdout reference never reports success") {
         for (const auto *key : {"walk", "stress", "stability", "baseline", "bootstrap", "holdout"}) {
             auto bad = root;
@@ -392,4 +392,29 @@ TEST_CASE("Maximum research snapshot is bounded and freezes bootstrap seed") {
     auto options = research["settings"].toObject(); options["seed"] = "321";
     research["settings"] = options; root["research"] = research;
     CHECK(live::verify_snapshot(encode(root), cancel).startsWith(QStringLiteral("НЕ СОВПАЛО:")));
+}
+TEST_CASE("Schema seven verifies final-period baseline and still reads original schema six") {
+    auto s = example(180);
+    live::ResearchChecks settings; settings.holdout_split = 144; settings.holdout_gap = 2;
+    std::atomic<bool> cancel{false};
+    s.research = std::make_shared<const live::ResearchChecks>(
+        live::run_research_checks(s.bars, s.config, s.reference, settings, cancel));
+    auto root = QJsonDocument::fromJson(live::encode_snapshot(s, "DEMO", "Final comparison", "")).object();
+    REQUIRE(root["schema"] == 7);
+    CHECK(live::verify_snapshot(encode(root), cancel).startsWith(QStringLiteral("СОВПАЛО:")));
+    auto research = root["research"].toObject(); auto ref = research["reference"].toObject();
+    auto holdout = ref["holdout"].toObject();
+    SUBCASE("tampered final baseline cannot pass") {
+        auto b = holdout["baseline"].toObject(); auto e = b["equity"].toArray(); e[0] = 9;
+        b["equity"] = e; holdout["baseline"] = b; ref["holdout"] = holdout;
+        research["reference"] = ref; root["research"] = research;
+        CHECK(live::verify_snapshot(encode(root), cancel).startsWith(QStringLiteral("НЕ СОВПАЛО:")));
+    }
+    SUBCASE("legacy six has no invented baseline claim") {
+        root["schema"] = 6; holdout.remove("baseline"); ref["holdout"] = holdout;
+        research["reference"] = ref; root["research"] = research;
+        const auto result = live::verify_snapshot(encode(root), cancel);
+        CHECK(result.startsWith(QStringLiteral("СОВПАЛО:")));
+        CHECK(result.contains(QStringLiteral("база финального периода в старой схеме не проверялась")));
+    }
 }

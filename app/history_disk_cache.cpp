@@ -18,6 +18,10 @@
 
 namespace live {
 namespace {
+const QTimeZone &moscow_zone() {
+    static const QTimeZone zone("Europe/Moscow");
+    return zone;
+}
 void check(bool ok, const char *message) {
     if (!ok) throw std::runtime_error(message);
 }
@@ -188,7 +192,7 @@ void HistoryDiskCache::validate(const HistoryDataset &set) {
     for (const auto &b : set.bars) {
         check(b.time_ms > previous && b.time_ms <= 32503680000000LL, "Cache chronology");
         previous = b.time_ms;
-        const auto date = QDateTime::fromMSecsSinceEpoch(b.time_ms).toTimeZone(QTimeZone("Europe/Moscow")).date();
+        const auto date = QDateTime::fromMSecsSinceEpoch(b.time_ms, moscow_zone()).date();
         check(date >= i.from && date <= i.till, "Cache candle outside requested dates");
         for (const auto n : {b.open, b.high, b.low, b.close})
             check(std::isfinite(n) && n > 0 && n <= 1e12, "Cache OHLC");

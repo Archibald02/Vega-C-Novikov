@@ -238,7 +238,8 @@ class PaperEngine {
 };
 SimResult backtest(const std::vector<Bar> &bars, const SimConfig &config, std::size_t start = 0,
                    bool capture_trace = false);
-SimResult buy_hold(const std::vector<Bar> &bars, const SimConfig &config);
+/** Fresh cash account scored on [start,end); earlier bars only warm indicators. */
+SimResult buy_hold(const std::vector<Bar> &bars, const SimConfig &config, std::size_t start = 0);
 struct Fold {
     std::size_t train_begin = 0, test_begin = 0, test_end = 0;
     int fast = 0, slow = 0;

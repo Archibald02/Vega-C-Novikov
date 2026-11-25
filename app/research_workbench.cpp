@@ -92,7 +92,17 @@ QString bars_hash(const std::vector<quant::Bar> &bars) {
                                  QCryptographicHash::Sha256)
             .toHex());
 }
-bool write_report(const QString &html, const QString &path, bool pdf) {
+QVector<QPointF> decimate(const std::vector<double> &values) {
+    QVector<QPointF> out;
+    const auto step = std::max<std::size_t>(1, (values.size() + 498) / 499);
+    for (std::size_t i = 0; i < values.size(); i += step)
+        out.push_back({static_cast<double>(i), values[i]});
+    if (!values.empty() && (out.isEmpty() || out.back().x() != values.size() - 1))
+        out.push_back({static_cast<double>(values.size() - 1), values.back()});
+    return out;
+}
+} // namespace
+bool ResearchPanel::write_report(const QString &html, const QString &path, bool pdf) {
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly))
         return false;
@@ -111,16 +121,6 @@ bool write_report(const QString &html, const QString &path, bool pdf) {
     }
     return file.commit();
 }
-QVector<QPointF> decimate(const std::vector<double> &values) {
-    QVector<QPointF> out;
-    const auto step = std::max<std::size_t>(1, (values.size() + 498) / 499);
-    for (std::size_t i = 0; i < values.size(); i += step)
-        out.push_back({static_cast<double>(i), values[i]});
-    if (!values.empty() && (out.isEmpty() || out.back().x() != values.size() - 1))
-        out.push_back({static_cast<double>(values.size() - 1), values.back()});
-    return out;
-}
-} // namespace
 QWidget *ResearchPanel::workbench_page() {
     auto *page = new QWidget;
     auto *l = new QVBoxLayout(page);
@@ -161,24 +161,40 @@ QWidget *ResearchPanel::workbench_page() {
     gap_ = new QSpinBox;
     gap_->setRange(0, 100);
     gap_->setPrefix(QStringLiteral("Разрыв, свечей "));
-    auto *final = new QPushButton(QStringLiteral("Открыть отложенные 20% истории"));
+    holdout_open_ = new QPushButton(QStringLiteral("Открыть отложенные 20% истории"));
+    holdout_open_->setObjectName("openFinalHoldout");
     data_layout_->addWidget(reserve_);
     data_layout_->addWidget(
         note(QStringLiteral("Эта часть истории не участвует в подборе настроек. Откройте её один раз на шаге "
                             "«Устойчивость», когда стратегия уже выбрана.")));
     split->addWidget(gap_);
-    split->addWidget(final);
+    split->addWidget(holdout_open_);
     l->addLayout(split);
     holdout_status_ =
         note(QStringLiteral("Финальные 20% исключены из аналитики, сетки и walk-forward. Повторные просмотры "
                             "отмечаются и перестают быть независимой проверкой."));
     l->addWidget(holdout_status_);
-    connect(final, &QPushButton::clicked, this, [this] {
+    l->addWidget(note(QStringLiteral("Финальная проверка • одинаковые даты и начальный капитал")));
+    holdout_table_ = grid({QStringLiteral("Модель"), QStringLiteral("Начало UTC"), QStringLiteral("Конец UTC (искл.)"),
+                          QStringLiteral("Начальный капитал, ₽"), QStringLiteral("Чистая доходность, %"),
+                          QStringLiteral("Макс. просадка, %")});
+    holdout_table_->setObjectName("finalValidationTable");
+    l->addWidget(holdout_table_);
+    connect(holdout_open_, &QPushButton::clicked, this, [this] {
         if (worker_->isRunning() || loading_)
             return;
         const auto b = selected_bars();
         if (b.size() < 100) {
             holdout_status_->setText(QStringLiteral("Для финальной проверки нужно хотя бы 100 свечей."));
+            return;
+        }
+        const auto split = b.size() * 8 / 10;
+        const int reserved = static_cast<int>(b.size() - split), gap = gap_->value();
+        const int available = std::max(0, reserved - gap);
+        if (available < 10) {
+            holdout_status_->setText(QStringLiteral("Всего %1 свечей; отложено %2; разрыв %3; "
+                "для оценки остаётся %4, требуется минимум 10. Уменьшите разрыв.")
+                .arg(b.size()).arg(reserved).arg(gap).arg(available));
             return;
         }
         const auto key = bars_hash(b);
@@ -188,16 +204,16 @@ QWidget *ResearchPanel::workbench_page() {
                                "сессию. Независимость нового теста здесь не подтверждается."));
             return;
         }
-        const bool used = holdout_used_[key];
-        holdout_used_[key] = true;
         holdout_key_ = key;
         evaluate_holdout_ = true;
         reserve_->setChecked(true);
-        holdout_status_->setText(
-            used ? QStringLiteral("ПОВТОРНЫЙ ПРОСМОТР: независимость holdout утрачена.")
-                 : QStringLiteral(
-                       "Первое открытие финального участка; параметры выбираются только на первых 80%."));
-        calculate();
+        holdout_status_->setText(QStringLiteral("Рассчитывается финальная проверка; результат ещё не показан."));
+        const bool launched = calculate();
+        if (!launched) {
+            evaluate_holdout_ = false;
+            holdout_key_.clear();
+            holdout_status_->setText(QStringLiteral("Финальная проверка не запущена. ") + status_->text());
+        }
     });
     stability_ = grid({QStringLiteral("fast / slow"), "slow ×0,8", "slow ×1,0", "slow ×1,2"});
     l->addWidget(note(QStringLiteral(
@@ -903,6 +919,7 @@ bool ResearchPanel::open_project(const QString &path) {
         for (const auto &value : seen)
             holdout_used_[value.toString()] = true;
         last_result_ = LabResult{};
+        present_holdout_table();
         clear_attribution();
         bootstrap_status_->setText(QStringLiteral("Проект открыт. Для bootstrap нужен новый расчёт."));
         bootstrap_chart_->clear();
@@ -1282,6 +1299,7 @@ void ResearchPanel::record_run(const LabResult &r) {
         bootstrap_histogram_->clear(QStringLiteral("Нет завершённых сценариев"));
     }
     refresh_runs();
+    present_holdout_table();
     if (r.has_holdout)
         holdout_status_->setText(
             holdout_status_->text() +
@@ -1424,19 +1442,19 @@ QString ResearchPanel::report_html(bool compact) const {
             "</p><p>Свечей: " + QString::number(r.parameters.value("bar_count").toInt()) +
             "; UTC начало / конец (мс): " + r.parameters.value("data_begin_utc").toString() + " / " +
             r.parameters.value("data_end_utc").toString() + "</p>";
-    html += QStringLiteral("<p>Чистая доходность %1%; просадка по закрытиям %2%; оборот %3; исполнений %4; "
+    html += QStringLiteral("<h2>Весь рассчитанный диапазон</h2><p>Чистая доходность %1%; просадка по закрытиям %2%; оборот %3; исполнений %4; "
                            "Sharpe %5; Sortino %6; Calmar %7.</p>")
                 .arg(num(m.total_return * 100), num(m.max_drawdown * 100), num(m.turnover))
                 .arg(m.fills)
                 .arg(num(m.sharpe), num(m.sortino), num(m.calmar));
-    html += QStringLiteral("<p>База держать: %1%; деньги: 0%; walk-forward: %2 окон, OOS %3%. Финальный "
-                           "тест: %4. Число ручных запусков в сессии: %5.</p>")
+    html += QStringLiteral("<p>База всего рассчитанного диапазона (прежняя модель): %1%. Деньги: 0%. "
+                           "Walk-forward: %2 окон, OOS %3%. Число ручных запусков в сессии: %4.</p>")
                 .arg(num(r.baseline.metrics.total_return * 100))
                 .arg(r.walk.folds.size())
-                .arg(num(r.walk.compounded_return * 100),
-                     r.has_holdout ? num(r.holdout.test.metrics.total_return * 100) + "%"
-                                   : QStringLiteral("не открыт"))
-                .arg(attempts_);
+                .arg(num(r.walk.compounded_return * 100))
+                .arg(r.snapshot && r.snapshot->research ? r.snapshot->research->manual_attempts : attempts_);
+    if (r.has_holdout)
+        html += final_validation_html(r.holdout);
     // Render from the immutable result, not from mutable/zoomed GUI widgets.
     auto plot = [](const std::vector<double> &values, const QColor &color) {
         QImage image(1000, 260, QImage::Format_RGB32);
@@ -1498,15 +1516,6 @@ QString ResearchPanel::report_html(bool compact) const {
                 .arg(r.stationarity.adf_lags)
                 .arg(num(r.stationarity.kpss))
                 .arg(r.stationarity.kpss_lags);
-    if (r.has_holdout)
-        html += QStringLiteral("<p>Финальная проверка: начало %1; эмбарго %2; замороженные SMA %3/%4; "
-                               "результат %5%%; просадка %6%%.</p>")
-                    .arg(r.holdout.split)
-                    .arg(r.holdout.gap)
-                    .arg(r.holdout.frozen.strategy.fast)
-                    .arg(r.holdout.frozen.strategy.slow)
-                    .arg(num(r.holdout.test.metrics.total_return * 100),
-                         num(r.holdout.test.metrics.max_drawdown * 100));
     html += "<h2>Параметры зафиксированного запуска</h2><pre>" +
             QString::fromUtf8(QJsonDocument(r.parameters).toJson()).toHtmlEscaped() + "</pre>";
     html += "<h2>Устойчивость и стресс</h2><table><tr><th>Сценарий / SMA</th><th>Чистый результат, "

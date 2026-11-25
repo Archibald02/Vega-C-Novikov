@@ -1012,7 +1012,7 @@ SimResult backtest(const std::vector<Bar> &bars, const SimConfig &config, std::s
     engine.finish();
     return engine.result();
 }
-SimResult buy_hold(const std::vector<Bar> &bars, const SimConfig &config) {
+SimResult buy_hold(const std::vector<Bar> &bars, const SimConfig &config, std::size_t start) {
     auto baseline = config;
     baseline.strategy.buy_hold = true;
     baseline.entry_confirmation = baseline.exit_confirmation = 1;
@@ -1022,7 +1022,7 @@ SimResult buy_hold(const std::vector<Bar> &bars, const SimConfig &config) {
     baseline.stop_fraction = baseline.target_fraction = 0;
     baseline.max_drawdown = baseline.daily_loss = 1;
     baseline.participation = 0;
-    return backtest(bars, baseline);
+    return backtest(bars, baseline, start);
 }
 WalkForward walk_forward(const std::vector<Bar> &bars, const SimConfig &config, int train, int test,
                          const std::atomic<bool> *cancel) {

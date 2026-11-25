@@ -476,3 +476,29 @@ TEST_CASE("Session limits use supplied historical timezone offset rather than fi
     data[0].utc_offset_seconds = 60000;
     CHECK_THROWS(validate_bars(data));
 }
+TEST_CASE("Final strategy and buy-hold score the same falling suffix from fresh cash") {
+    std::vector<double> prices;
+    for (int i = 0; i < 200; ++i) prices.push_back(i < 160 ? 100 + 2. * i : 418 - 5. * (i - 160));
+    const auto data = bars(prices);
+    auto c = base(); c.strategy.buy_hold = false;
+    c.commission_rate = .001; c.fixed_fee = 1; c.spread_bps = 8; c.slippage_bps = 3;
+    const auto r = final_holdout(data, c, 160, 5);
+    const auto whole = buy_hold(data, c);
+    REQUIRE(r.baseline.metrics.total_return < 0);
+    REQUIRE(whole.metrics.total_return > 0);
+    CHECK(r.baseline.start_time == data[165].time);
+    CHECK(r.test.start_time == r.baseline.start_time);
+    CHECK(r.test.times == r.baseline.times);
+    CHECK(r.test.equity.front() == c.initial_cash);
+    CHECK(r.baseline.equity.front() == c.initial_cash);
+    for (const auto &s : {r.test, r.baseline})
+        for (const auto &e : s.journal) CHECK(e.time >= data[165].time);
+    const double buy = data[165].open * 1.0007, sell = data.back().close * .9993;
+    const auto units = std::floor((c.initial_cash - c.fixed_fee) / (buy * (1 + c.commission_rate)));
+    const double final_cash = c.initial_cash - units * buy * (1 + c.commission_rate) - c.fixed_fee +
+                              units * sell * (1 - c.commission_rate) - c.fixed_fee;
+    CHECK(r.baseline.metrics.total_return == doctest::Approx(final_cash / c.initial_cash - 1).epsilon(1e-10));
+    CHECK(r.baseline.metrics.max_drawdown > 0);
+    CHECK(r.test.metrics.max_drawdown < r.baseline.metrics.max_drawdown);
+    CHECK_THROWS(final_holdout(std::vector<Bar>(data.begin(), data.begin() + 100), c, 80, 15));
+}

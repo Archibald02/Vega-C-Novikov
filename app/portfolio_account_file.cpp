@@ -13,6 +13,10 @@
 #include <stdexcept>
 namespace live {
 namespace {
+const QTimeZone &moscow_zone() {
+    static const QTimeZone zone("Europe/Moscow");
+    return zone;
+}
 void require(bool ok) {
     if (!ok)
         throw std::invalid_argument("Portfolio account schema/replay");
@@ -63,7 +67,7 @@ quant::Bar bar(const QJsonValue &v) {
     b.volume = number(a[6], 0, 1e18);
     b.utc_offset_seconds = static_cast<int>(integer(a[7], -50400, 50400));
     require(b.utc_offset_seconds ==
-            QDateTime::fromMSecsSinceEpoch(b.time, QTimeZone("Europe/Moscow")).offsetFromUtc());
+            QDateTime::fromMSecsSinceEpoch(b.time, moscow_zone()).offsetFromUtc());
     quant::validate_bars({b});
     return b;
 }
@@ -264,7 +268,7 @@ PortfolioAccountRestore replay_portfolio_account(const PortfolioAccountSnapshot 
                 require(
                     b.end - b.time == (s.interval == 60 ? 3600000LL : 86400000LL) &&
                     b.utc_offset_seconds ==
-                        QDateTime::fromMSecsSinceEpoch(b.time, QTimeZone("Europe/Moscow")).offsetFromUtc());
+                        QDateTime::fromMSecsSinceEpoch(b.time, moscow_zone()).offsetFromUtc());
         out.account->step(f);
         out.baseline->step(f);
     }
@@ -289,7 +293,7 @@ PortfolioAccountRestore replay_portfolio_account(const PortfolioAccountSnapshot 
         for (std::size_t j = 0; j < a.series.size(); ++j)
             for (const auto &b : a.series[j]) {
                 require(b.utc_offset_seconds ==
-                        QDateTime::fromMSecsSinceEpoch(b.time, QTimeZone("Europe/Moscow")).offsetFromUtc());
+                        QDateTime::fromMSecsSinceEpoch(b.time, moscow_zone()).offsetFromUtc());
                 const auto old = history[j].find(b.time);
                 require(old == history[j].end() || bar_json(old->second) == bar_json(b));
             }

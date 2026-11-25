@@ -26,10 +26,11 @@ void ResearchPanel::update_journey() {
     step_title_->setText(titles.value(row));
     const auto bars = selected_bars();
     const bool busy =
-        loading_ || (worker_ && worker_->isRunning()) || (snapshot_worker_ && snapshot_worker_->isRunning());
+        !holdout_key_.isEmpty() || loading_ || (worker_ && worker_->isRunning()) || (snapshot_worker_ && snapshot_worker_->isRunning());
     const auto size = reserve_->isChecked() ? bars.size() * 8 / 10 : bars.size();
     const bool ready = size >= 40 && !source_dirty_ && !loading_;
     calculate_->setEnabled(ready && !busy);
+    if (holdout_open_) holdout_open_->setEnabled(!busy && !source_dirty_ && bars.size() >= 100);
     calculate_->setVisible(row == 2 || row == 4);
     cancel_button_->setVisible(busy || calendar_loading_);
     calculate_->setText(result_current_ ? QStringLiteral("Пересчитать") : QStringLiteral("Рассчитать"));
@@ -84,6 +85,9 @@ void ResearchPanel::update_journey() {
                                      : QStringLiteral("Параметры изменены: на экране предыдущий результат"),
                      last_result_.source)
                 .arg(last_result_.features.size()));
+    if (last_result_.has_holdout)
+        result_context_->setText(result_context_->text() + QStringLiteral(
+            "\nКарточки и графики — за всю историю. Финальный период сравнивается отдельно в таблице «Финальная проверка» на шаге «Устойчивость»."));
     result_banner_->setText(result_context_->text());
     back_->setEnabled(row > 0);
     const QStringList actions{

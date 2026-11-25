@@ -4,6 +4,7 @@
 #include "market_feed.hpp"
 #include "market_history.hpp"
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QEvent>
 #include <QJsonArray>
@@ -26,9 +27,12 @@ namespace {
 struct LocalServer {
     QTcpServer listener;
     QVector<QByteArray> received;
+    QElapsedTimer diagnostic_clock;
     std::function<void(QTcpSocket*,const QByteArray&)> handler;
     LocalServer() {
-        if (!listener.listen(QHostAddress::LocalHost)) throw std::runtime_error("Loopback listen failed");
+        diagnostic_clock.start();
+        if (!listener.listen(QHostAddress::LocalHost))
+            throw std::runtime_error(("Loopback listen failed: " + listener.errorString()).toStdString());
         QObject::connect(&listener,&QTcpServer::newConnection,&listener,[this] {
             while (auto* socket=listener.nextPendingConnection()) {
                 auto bytes=std::make_shared<QByteArray>();auto done=std::make_shared<bool>(false);
@@ -36,7 +40,11 @@ struct LocalServer {
                 QObject::connect(socket,&QTcpSocket::readyRead,socket,[this,socket,bytes,done] {
                     bytes->append(socket->readAll());
                     if(*done||!bytes->contains("\r\n\r\n"))return;
-                    *done=true;received.push_back(*bytes);if(handler)handler(socket,*bytes);
+                    *done=true;received.push_back(*bytes);
+                    if (qEnvironmentVariableIsSet("QPL_TEST_TRACE"))
+                        qInfo("loopback request #%lld at %lld ms: %s", static_cast<long long>(received.size()),
+                              diagnostic_clock.elapsed(), bytes->split(' ').value(1).constData());
+                    if(handler)handler(socket,*bytes);
                 });
             }
         });
@@ -1361,4 +1369,18 @@ TEST_CASE("Archived 5000-candle contents preserve truncation and remain bounded"
     CHECK(h.datasets().isEmpty());
     CHECK(h.archived_datasets(base.key).isEmpty());
     CHECK_FALSE(h.restore_revision(base.key, base.revision));
+}
+TEST_CASE("MOEX timestamp parser uses historical Moscow zone independent of host-local parsing") {
+    QJsonArray data;
+    for (const auto &date : {"2010-07-01", "2024-07-01"})
+        data.append(QJsonArray{QString(date) + " 00:00:00", 100, 101, 99, 100, 10});
+    const QJsonDocument doc(QJsonObject{{"candles", QJsonObject{
+        {"columns", QJsonArray{"begin","open","high","low","close","volume"}}, {"data",data}}}});
+    const auto bars = live::parse_candles(doc);
+    REQUIRE(bars.size() == 2);
+    const QTimeZone zone("Europe/Moscow");
+    CHECK(bars[0].time_ms == QDateTime(QDate(2010,7,1),QTime(0,0),zone).toMSecsSinceEpoch());
+    CHECK(bars[1].time_ms == QDateTime(QDate(2024,7,1),QTime(0,0),zone).toMSecsSinceEpoch());
+    CHECK(QDateTime::fromMSecsSinceEpoch(bars[0].time_ms,zone).offsetFromUtc() == 14400);
+    CHECK(QDateTime::fromMSecsSinceEpoch(bars[1].time_ms,zone).offsetFromUtc() == 10800);
 }

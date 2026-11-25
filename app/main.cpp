@@ -1,5 +1,7 @@
 #include "instrument_catalog.hpp"
 #include "main_window.hpp"
+#include "research_panel.hpp"
+#include <QFile>
 #include <QApplication>
 #include <QDir>
 #include <QFontDatabase>
@@ -31,6 +33,27 @@ int main(int argc, char **argv) {
     QCoreApplication::setApplicationName("QuantPriceLive");
     QCoreApplication::setApplicationVersion(QStringLiteral(QUANT_PRICE_LIVE_VERSION));
     const auto args = app.arguments();
+    // Explicit offline tools create no main window and never start a data provider.
+    if (args.contains("--verify-snapshot") || args.contains("--defense-example")) {
+        const bool verify = args.contains("--verify-snapshot");
+        const int index = args.indexOf(verify ? "--verify-snapshot" : "--defense-example");
+        if (index + 1 >= args.size()) return 2;
+        QTemporaryDir cache;
+        if (!cache.isValid()) return 1;
+        app.setProperty("historyCacheDirectory", cache.filePath("history-cache"));
+        if (!verify) {
+            live::ResearchPanel example;
+            return example.create_defense_example(args[index + 1]) ? 0 : 1;
+        }
+        QFile file(args[index + 1]);
+        if (!file.open(QIODevice::ReadOnly) || file.size() > live::snapshot_byte_limit) return 1;
+        try {
+            std::atomic<bool> cancel{false};
+            const auto result = live::verify_snapshot(file.read(live::snapshot_byte_limit + 1), cancel);
+            std::printf("%s\n", result.toUtf8().constData());
+            return result.startsWith(QStringLiteral("СОВПАЛО:")) ? 0 : 1;
+        } catch (const std::exception &) { std::fprintf(stderr, "Invalid snapshot\n"); return 1; }
+    }
     const bool online_lab = args.contains("--check-lab");
     const bool lab = args.contains("--lab-test");
     const bool soak = args.contains("--soak-test");
