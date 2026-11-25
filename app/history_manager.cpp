@@ -486,7 +486,7 @@ bool ResearchPanel::history_manager_test() {
                 if (path.startsWith("/calendar?")) {
                     ++calendar_requests;
                     if (query.queryItemValue("start") == "0")
-                        rows.append(QJsonArray{"2024-01-01", 1});
+                        rows.append(QJsonArray{query.queryItemValue("from"), 1});
                     else if (query.queryItemValue("start") == "1") {
                         rows.append(QJsonArray{"2024-02-10", 0});
                         rows.append(QJsonArray{"2024-02-11", 1});
@@ -637,6 +637,17 @@ bool ResearchPanel::history_manager_test() {
         qWarning("%s", qPrintable(temporary.calendar_status_->text()));
         return false;
     }
+    // Cross-year history must not silently lose all dates before January of the final year.
+    const auto original_calendar_bars = temporary.data_.begin()->second;
+    auto cross_year = original_calendar_bars;
+    cross_year.front().time = QDateTime(QDate(2023, 12, 28), QTime(0, 0), QTimeZone("Europe/Moscow")).toMSecsSinceEpoch();
+    temporary.data_.begin()->second = cross_year;
+    temporary.calendar_check_->click();
+    if (!wait_for([&] { return !temporary.calendar_loading_; }) || calendar_requests != 6 ||
+        temporary.calendar_from_ != QDate(2023, 12, 29) ||
+        !temporary.calendar_status_->text().contains("2023-12-29"))
+        return false;
+    temporary.data_.begin()->second = original_calendar_bars;
     if (!temporary.disk_cache_test() || requests != 4)
         return false;
     const bool cleared = temporary.loader_.datasets().isEmpty() &&

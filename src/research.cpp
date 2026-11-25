@@ -1024,10 +1024,13 @@ SimResult buy_hold(const std::vector<Bar> &bars, const SimConfig &config) {
     baseline.participation = 0;
     return backtest(bars, baseline);
 }
-WalkForward walk_forward(const std::vector<Bar> &bars, const SimConfig &config, int train, int test) {
+WalkForward walk_forward(const std::vector<Bar> &bars, const SimConfig &config, int train, int test,
+                         const std::atomic<bool> *cancel) {
     validate_bars(bars);
     if (train < 60 || train > 1000 || test < 10 || test > 500)
         throw std::invalid_argument("Walk-forward windows");
+    auto check = [&] { if (cancel && cancel->load()) throw std::runtime_error("Walk-forward cancelled"); };
+    check();
     WalkForward result;
     double capital = config.initial_cash;
     for (std::size_t boundary = train; boundary + test <= bars.size() && result.folds.size() < 20;
@@ -1040,6 +1043,7 @@ WalkForward walk_forward(const std::vector<Bar> &bars, const SimConfig &config, 
         for (int fast : {5, 10, 20})
             for (int slow : {20, 40, 60})
                 if (fast < slow) {
+                    check();
                     auto candidate = config;
                     candidate.strategy.fast = fast;
                     candidate.strategy.slow = slow;
@@ -1050,6 +1054,7 @@ WalkForward walk_forward(const std::vector<Bar> &bars, const SimConfig &config, 
                         bs = slow;
                     }
                 }
+        check();
         auto selected = config;
         selected.initial_cash = capital;
         selected.strategy.fast = bf;
@@ -1060,6 +1065,7 @@ WalkForward walk_forward(const std::vector<Bar> &bars, const SimConfig &config, 
             {boundary - train, boundary, boundary + test, bf, bs, best, evaluated.metrics.total_return});
         capital *= 1 + evaluated.metrics.total_return;
     }
+    check();
     result.compounded_return = capital / config.initial_cash - 1;
     return result;
 }

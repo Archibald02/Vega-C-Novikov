@@ -31,7 +31,11 @@ void ResearchPanel::start_calendar() {
     const auto first = moscow_date(bars.front().time);
     const auto last = moscow_date(bars.back().time);
     calendar_till_ = last.addDays(-1);
-    calendar_from_ = std::max(first.addDays(1), QDate(calendar_till_.year(), 1, 1));
+    calendar_from_ = first.addDays(1);
+    if (calendar_from_.daysTo(calendar_till_) > 7305) {
+        calendar_status_->setText(QStringLiteral("Сверка ограничена 20 годами. Выберите меньший диапазон."));
+        return;
+    }
     if (calendar_from_ > calendar_till_) {
         calendar_status_->setText(QStringLiteral("Внутри диапазона нет целых дней для сверки."));
         return;
@@ -56,7 +60,7 @@ void ResearchPanel::start_calendar() {
 void ResearchPanel::calendar_page(int offset, int page, quint64 generation) {
     if (generation != calendar_generation_ || !calendar_loading_)
         return;
-    if (page >= 20) {
+    if (page >= 100) {
         finish_calendar(QStringLiteral("Превышен предел страниц календаря."));
         return;
     }
@@ -149,7 +153,7 @@ void ResearchPanel::finish_calendar(const QString &error) {
             "Календарь MOEX, %1—%2 (МСК). Торговых дней со свечами: %3. "
             "Торговых дней без свечей: %4. Неторговых: %5, из них со свечами: %6. Данных календаря нет: %7.\n"
             "Расписание рынка не подтверждает сделки по конкретному тикеру. Проверка не определяет "
-            "часовые паузы и не меняет свечи.")
+            "часовые паузы и не меняет свечи. Граничные дни исключены, поскольку могут быть неполными.")
             .arg(calendar_from_.toString(Qt::ISODate), calendar_till_.toString(Qt::ISODate))
             .arg(days_with_candles).arg(candidates).arg(closed).arg(closed_with_candles).arg(unknown) +
             (examples.isEmpty() ? QString{} : QStringLiteral("\nДаты для проверки: ") + examples.join(", ")));

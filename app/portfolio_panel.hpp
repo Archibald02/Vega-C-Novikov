@@ -1,6 +1,7 @@
 #pragma once
 #include "portfolio_account_file.hpp"
 #include "portfolio_input.hpp"
+#include "quant/bootstrap.hpp"
 #include "portfolio_live_feed.hpp"
 #include "portfolio_project.hpp"
 #include "ui_helpers.hpp"
@@ -31,6 +32,7 @@ struct PortfolioReplay {
 };
 struct PortfolioOutcome {
     quant::PortfolioResult result, baseline;
+    quant::BootstrapResult bootstrap;
     QString source, error;
     std::shared_ptr<PortfolioReplay> replay;
 };
@@ -102,7 +104,8 @@ class PortfolioPanel : public QWidget {
     QDoubleSpinBox *capital_, *invested_, *weight_limit_, *group_limit_, *commission_, *fixed_, *spread_,
         *slippage_, *drawdown_, *daily_;
     QSpinBox *period_, *fast_, *slow_, *manual_stop_;
-    QCheckBox *manual_metadata_;
+    QCheckBox *manual_metadata_, *bootstrap_enabled_;
+    QLabel *bootstrap_status_;
     VisualChart *equity_, *drawdowns_;
     ui::WheelGuard *guard_;
     QFutureWatcher<PortfolioOutcome> *worker_;

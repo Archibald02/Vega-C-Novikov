@@ -315,3 +315,81 @@ TEST_CASE("Higher closed-hour snapshot reproduces and detects changed "
         CHECK_THROWS(live::verify_snapshot(encode(root), cancelled));
     }
 }
+TEST_CASE("Research snapshot repeats frozen trading checks including bootstrap and holdout") {
+    auto s = example(180);
+    live::ResearchChecks settings;
+    settings.train = 60; settings.test = 20; settings.manual_attempts = 7;
+    settings.bootstrap_enabled = true;
+    settings.bootstrap_config = {100, 5, 123};
+    settings.holdout_split = 144; settings.holdout_gap = 2;
+    std::atomic<bool> cancel{false};
+    s.research = std::make_shared<const live::ResearchChecks>(
+        live::run_research_checks(s.bars, s.config, s.reference, settings, cancel));
+    auto root = QJsonDocument::fromJson(live::encode_snapshot(s, "DEMO", "Full", "hypothesis")).object();
+    REQUIRE(root["schema"] == 6);
+    CHECK(live::verify_snapshot(encode(root), cancel).contains(QStringLiteral("holdout: повторён")));
+    SUBCASE("changed walk, stress, baseline, bootstrap or holdout reference never reports success") {
+        for (const auto *key : {"walk", "stress", "stability", "baseline", "bootstrap", "holdout"}) {
+            auto bad = root;
+            auto research = bad["research"].toObject();
+            auto ref = research["reference"].toObject();
+            ref[key] = QJsonObject{};
+            research["reference"] = ref; bad["research"] = research;
+            CHECK(live::verify_snapshot(encode(bad), cancel).startsWith(QStringLiteral("НЕ СОВПАЛО:")));
+        }
+    }
+    SUBCASE("unsafe settings, missing options and unknown fields are rejected") {
+        for (const auto &edit : std::vector<std::pair<QString, QJsonValue>>{
+                 {"train", 59}, {"test", 101}, {"seed", "4294967296"}, {"seed", "00123"},
+                 {"holdout_split", 179}, {"holdout_gap", -1}, {"simulations", 1000000},
+                 {"block", 0}, {"manual_attempts", 0}, {"unknown", true}}) {
+            auto bad = root; auto research = bad["research"].toObject();
+            auto options = research["settings"].toObject(); options[edit.first] = edit.second;
+            research["settings"] = options; bad["research"] = research;
+            CHECK_THROWS(live::verify_snapshot(encode(bad), cancel));
+        }
+        auto research = root["research"].toObject();
+        auto options = research["settings"].toObject(); options.remove("bootstrap_enabled");
+        research["settings"] = options; root["research"] = research;
+        CHECK_THROWS(live::verify_snapshot(encode(root), cancel));
+    }
+    SUBCASE("cancelled replay does not publish a comparison") {
+        cancel.store(true);
+        CHECK(live::verify_snapshot(encode(root), cancel).contains(QStringLiteral("отменена")));
+        CHECK_THROWS(live::run_research_checks(s.bars, s.config, s.reference, settings, cancel));
+        CHECK_THROWS(quant::walk_forward(s.bars, s.config, 60, 20, &cancel));
+        CHECK_THROWS(quant::final_holdout(s.bars, s.config, 144, 2, &cancel));
+    }
+}
+TEST_CASE("Research snapshot with closed reserve contains only research bars and no invented holdout") {
+    auto s = example(144);
+    live::ResearchChecks settings;
+    std::atomic<bool> cancel{false};
+    s.research = std::make_shared<const live::ResearchChecks>(
+        live::run_research_checks(s.bars, s.config, s.reference, settings, cancel));
+    auto bytes = live::encode_snapshot(s, "DEMO", "Reserved", "");
+    const auto root = QJsonDocument::fromJson(bytes).object();
+    CHECK(root["bars"].toArray().size() == 144);
+    CHECK_FALSE(root["research"].toObject()["reference"].toObject().contains("holdout"));
+    CHECK_FALSE(root["research"].toObject()["reference"].toObject().contains("bootstrap"));
+    CHECK(live::verify_snapshot(bytes, cancel).contains(QStringLiteral("holdout: не открывался")));
+}
+TEST_CASE("Maximum research snapshot is bounded and freezes bootstrap seed") {
+    auto s = example(5000);
+    s.reference = quant::backtest(s.bars, s.config, 0, true);
+    live::ResearchChecks settings;
+    settings.bootstrap_enabled = true;
+    settings.bootstrap_config = {100, 10, 123};
+    settings.holdout_split = 4000;
+    std::atomic<bool> cancel{false};
+    s.research = std::make_shared<const live::ResearchChecks>(
+        live::run_research_checks(s.bars, s.config, s.reference, settings, cancel));
+    const auto bytes = live::encode_snapshot(s, "DEMO", "Bounded research", "");
+    CHECK(bytes.size() <= live::snapshot_byte_limit);
+    CHECK(live::verify_snapshot(bytes, cancel).startsWith(QStringLiteral("СОВПАЛО:")));
+    auto root = QJsonDocument::fromJson(bytes).object();
+    auto research = root["research"].toObject();
+    auto options = research["settings"].toObject(); options["seed"] = "321";
+    research["settings"] = options; root["research"] = research;
+    CHECK(live::verify_snapshot(encode(root), cancel).startsWith(QStringLiteral("НЕ СОВПАЛО:")));
+}

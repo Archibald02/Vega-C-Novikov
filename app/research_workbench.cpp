@@ -310,7 +310,7 @@ QWidget *ResearchPanel::workbench_page() {
     qobject_cast<QVBoxLayout *>(tabs_->widget(3)->layout())->insertWidget(2, live);
     connect(live, &QPushButton::clicked, this, &ResearchPanel::start_live_paper);
     l = quality_layout_;
-    auto *reference = new QPushButton(QStringLiteral("Сверить пропуски с торговыми датами MOEX"));
+    auto *reference = new QPushButton(QStringLiteral("Дополнительно: даты IMOEX и сведения о дивидендах"));
     l->addWidget(reference);
     connect(reference, &QPushButton::clicked, this, &ResearchPanel::fetch_reference);
     reference_status_ = note(QStringLiteral(

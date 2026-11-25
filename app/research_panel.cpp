@@ -1407,11 +1407,10 @@ void ResearchPanel::calculate() {
             return;
         }
     }
-    const auto complete_bars = bars;
     const bool holdout = evaluate_holdout_;
     evaluate_holdout_ = false;
     const bool reserve = reserve_->isChecked();
-    const auto split = static_cast<std::size_t>(complete_bars.size() * .8);
+    const auto split = static_cast<std::size_t>(bars.size() * .8);
     if (reserve && !holdout)
         bars.resize(split);
     if (bars.size() < 40)
@@ -1441,6 +1440,7 @@ void ResearchPanel::calculate() {
     attempts_ = std::min(1000000, attempts_ + 1);
     cancel_ = std::make_shared<std::atomic<bool>>(false);
     auto cancelled = cancel_;
+    const int manual_attempts = attempts_;
     const int window = window_->value(), lags = lags_->value(), adf = adf_lags_->value(),
               kpss = kpss_lags_->value(), train = train_->value(), test = test_->value();
     std::vector<std::vector<quant::Bar>> series;
@@ -1455,9 +1455,9 @@ void ResearchPanel::calculate() {
         }
     calculate_->setEnabled(false);
     status_->setText(QStringLiteral("Считаем в фоне. Окно остаётся доступным; можно отменить расчёт."));
-    worker_->setFuture(QtConcurrent::run([bars, complete_bars, series, config, window, lags, adf, kpss, train,
+    worker_->setFuture(QtConcurrent::run([bars, series, config, window, lags, adf, kpss, train,
                                           test, cancelled, parameters, hash, source, holdout, split, embargo,
-                                          bootstrap_enabled, bootstrap_config] {
+                                          bootstrap_enabled, bootstrap_config, manual_attempts] {
         LabResult r;
         r.explained_strategy = config.strategy;
         r.explained_config = config;
@@ -1485,20 +1485,21 @@ void ResearchPanel::calculate() {
                 r.correlation = quant::aligned_correlation(series);
             r.simulation = quant::backtest(bars, config, 0, true);
             r.attribution = quant::performance_attribution(bars, r.simulation, cancelled.get());
-            r.snapshot = std::make_shared<const ReplaySnapshot>(ReplaySnapshot{bars, config, r.simulation});
-            r.baseline = quant::buy_hold(bars, config);
-            if (cancelled->load())
-                return r;
-            r.walk = quant::walk_forward(bars, config, train, test);
-            if (cancelled->load())
-                return r;
-            r.robustness = quant::robustness(bars, config, cancelled.get());
-            if (bootstrap_enabled && !cancelled->load())
-                r.bootstrap = quant::equity_bootstrap(r.simulation.equity, bootstrap_config, cancelled.get());
-            if (holdout && !cancelled->load()) {
-                r.holdout = quant::final_holdout(complete_bars, config, split, embargo);
-                r.has_holdout = true;
-            }
+            ResearchChecks settings;
+            settings.train = train; settings.test = test; settings.manual_attempts = manual_attempts;
+            settings.bootstrap_enabled = bootstrap_enabled;
+            settings.bootstrap_config = bootstrap_config;
+            settings.holdout_split = holdout ? split : 0;
+            settings.holdout_gap = embargo;
+            auto checks = std::make_shared<const ResearchChecks>(
+                run_research_checks(bars, config, r.simulation, settings, *cancelled));
+            r.baseline = checks->baseline;
+            r.walk = checks->walk;
+            r.robustness = checks->robustness;
+            r.bootstrap = checks->bootstrap;
+            r.holdout = checks->holdout;
+            r.has_holdout = holdout;
+            r.snapshot = std::make_shared<const ReplaySnapshot>(ReplaySnapshot{bars, config, r.simulation, checks});
         } catch (const std::exception &) {
             r.error =
                 QStringLiteral("Расчёт невозможен: недостаточно данных, некорректные интервалы/параметры "
